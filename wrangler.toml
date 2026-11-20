@@ -1,0 +1,10 @@
+name = "tg-file-store"
+main = "src/index.js"
+compatibility_date = "2024-11-20"
+
+[vars]
+CHAT_ID = "-1001234567890"
+
+[[kv_namespaces]]
+binding = "FILE_KV"
+id = "your_kv_namespace_id"

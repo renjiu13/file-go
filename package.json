@@ -1,0 +1,14 @@
+{
+  "name": "tg-file-store",
+  "version": "1.0.0",
+  "description": "Telegram file storage on Cloudflare Workers",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  }
+}
