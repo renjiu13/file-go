@@ -33,7 +33,11 @@ export async function handleUpload(request, env) {
     uploadResult = await uploadFileToChannel(env, file);
   } catch (err) {
     console.error('上传到 Telegram 失败:', err);
-    return json({ error: '上传到 Telegram 失败' }, 502);
+    const limited = err.telegramStatus === 429;
+    return json(
+      { error: limited ? 'Telegram 请求过于频繁，稍后自动重试' : '上传到 Telegram 失败' },
+      limited ? 429 : 502
+    );
   }
 
   const id = await newShortId(env);

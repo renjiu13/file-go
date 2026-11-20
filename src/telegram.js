@@ -68,9 +68,12 @@ export async function uploadFileToChannel(env, file) {
     method: 'POST',
     body: form,
   });
-  const data = await res.json();
-  if (!data.ok) {
-    throw new Error(`Telegram sendDocument 失败: ${data.description}`);
+  const data = await res.json().catch(() => null);
+  if (!data || !data.ok) {
+    const err = new Error(`Telegram sendDocument 失败: ${data ? data.description : `HTTP ${res.status}`}`);
+    // 429 是并发上传时的常见响应，交给调用方决定重试策略
+    err.telegramStatus = data ? data.error_code : 502;
+    throw err;
   }
   return { fileId: data.result.document.file_id, messageId: data.result.message_id };
 }

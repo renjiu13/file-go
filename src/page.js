@@ -48,7 +48,7 @@ export function renderPage() {
   .status {
     position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%);
     background: #111; color: #fff; padding: 8px 16px; border-radius: 6px;
-    font-size: 13px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 100;
+    font-size: 13px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 4000;
   }
   .status.show { opacity: 0.95; }
   #context-menu {
@@ -84,9 +84,51 @@ export function renderPage() {
   .btn { padding: 6px 16px; border-radius: 4px; font-size: 13px; cursor: pointer; border: 1px solid #ddd; background: #fff; }
   .btn.primary { background: #111; color: #fff; border-color: #111; }
   .btn.primary:hover { background: #333; }
+  /* 拖拽上传遮罩 */
+  .drop-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.9);
+    display: none; align-items: center; justify-content: center; z-index: 5000; pointer-events: none;
+  }
+  .drop-overlay.show { display: flex; }
+  .drop-inner {
+    border: 2px dashed #999; border-radius: 10px; padding: 36px 56px;
+    font-size: 15px; color: #333; background: #fff; max-width: 80%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 上传队列面板 */
+  .up-panel {
+    position: fixed; right: 20px; bottom: 20px; width: 320px; background: #fff;
+    border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+    z-index: 1500; display: none; overflow: hidden;
+  }
+  .up-panel.show { display: block; }
+  .up-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 9px 12px; border-bottom: 1px solid #eee; font-size: 13px; color: #333;
+  }
+  .up-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .up-link { font-size: 12px; color: #888; cursor: pointer; border: none; background: none; padding: 0 2px; font-family: inherit; }
+  .up-link:hover { color: #111; text-decoration: underline; }
+  .up-body { max-height: 240px; overflow-y: auto; }
+  .up-panel.collapsed .up-body { display: none; }
+  .up-item { padding: 8px 12px; border-bottom: 1px solid #f5f5f5; }
+  .up-item:last-child { border-bottom: none; }
+  .up-line { display: flex; align-items: baseline; gap: 8px; }
+  .up-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #111; }
+  .up-state {
+    flex-shrink: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 12px; color: #888; font-variant-numeric: tabular-nums;
+  }
+  .up-state.ok { color: #2a7d2a; }
+  .up-state.bad { color: #d33; }
+  .up-bar { height: 3px; background: #f2f2f2; border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .up-bar i { display: block; height: 100%; width: 0; background: #111; transition: width 0.15s linear; }
+  .up-bar.ok i { background: #dcdcdc; }
+  .up-bar.err i { background: #e0a5a5; }
   @media (max-width: 600px) {
     .date { width: 100px; }
     .size { display: none; }
+    .up-panel { left: 12px; right: 12px; width: auto; bottom: 12px; }
   }
 </style>
 </head>
@@ -101,11 +143,24 @@ export function renderPage() {
     </div>
   </div>
   <nav class="breadcrumb" id="breadcrumb"></nav>
-  <input type="file" id="fileInput" hidden>
+  <input type="file" id="fileInput" multiple hidden>
   <ul id="list"></ul>
 </div>
 
 <div class="status" id="status"></div>
+
+<div class="drop-overlay" id="dropOverlay">
+  <div class="drop-inner" id="dropInner">松开鼠标即可上传</div>
+</div>
+
+<div class="up-panel" id="upPanel">
+  <div class="up-head">
+    <span class="up-summary" id="upSummary">上传队列</span>
+    <button class="up-link" id="upToggle" type="button">收起</button>
+    <button class="up-link" id="upClear" type="button">清除</button>
+  </div>
+  <div class="up-body" id="upBody"></div>
+</div>
 
 <div id="context-menu">
   <div class="ctx-item" id="ctxDownload" style="display:none;">下载 / 预览</div>
@@ -137,6 +192,13 @@ export function renderPage() {
   var mkdirBtn = document.getElementById('mkdirBtn');
   var uploadBtn = document.getElementById('uploadBtn');
   var fileInput = document.getElementById('fileInput');
+  var dropOverlay = document.getElementById('dropOverlay');
+  var dropInner = document.getElementById('dropInner');
+  var upPanel = document.getElementById('upPanel');
+  var upBody = document.getElementById('upBody');
+  var upSummary = document.getElementById('upSummary');
+  var upToggle = document.getElementById('upToggle');
+  var upClear = document.getElementById('upClear');
 
   var rawPath = location.pathname.replace(/^\\/+|\\/+$/g, '');
   var currentPath = '';
@@ -446,19 +508,282 @@ export function renderPage() {
 
   uploadBtn.addEventListener('click', function () { fileInput.click(); });
   fileInput.addEventListener('change', function () {
-    var file = fileInput.files[0];
-    if (file) {
-      if (file.size > MAX_SIZE) { showStatus('文件不能超过 20MB'); fileInput.value = ''; return; }
-      var form = new FormData();
-      form.append('file', file);
-      form.append('path', currentPath);
-      showStatus('上传中...');
-      fetch('/api/upload', { method: 'POST', body: form })
-        .then(function (r) { return r.json(); }).then(function (d) {
-          if (d.url) { showStatus('上传成功'); load(); } else { showStatus(d.error || '上传失败'); }
-        }).catch(function () { showStatus('网络错误'); });
-    }
+    if (fileInput.files && fileInput.files.length) addFiles(fileInput.files);
     fileInput.value = '';
+  });
+
+  // ===== 上传队列 =====
+  var CONCURRENCY = 2;          // Telegram 对同一 chat 有频率限制，并发不宜过高
+  var MAX_RETRY = 2;            // 限流/网络错误自动重试次数
+  var queue = [];
+  var running = 0;
+  var reloadTimer = null;
+
+  function isBusy() {
+    for (var i = 0; i < queue.length; i++) {
+      var s = queue[i].status;
+      if (s === 'waiting' || s === 'uploading') return true;
+    }
+    return false;
+  }
+
+  function addFiles(files) {
+    var added = 0, skipped = 0, oversize = 0;
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      // 拖拽进来的文件夹在浏览器里是 size 为 0 的条目
+      if (f.size === 0) { skipped++; continue; }
+      var item = {
+        file: f, name: f.name, size: f.size,
+        path: currentPath, loaded: 0, status: 'waiting', error: '', attempt: 0
+      };
+      if (f.size > MAX_SIZE) { item.status = 'error'; item.error = '超过 20MB'; item.noRetry = true; }
+      queue.push(item);
+      appendRow(item);
+      added++;
+      if (item.status === 'error') oversize++;
+    }
+    if (oversize) showStatus(oversize + ' 个文件超过 20MB');
+    else if (skipped) showStatus('已跳过 ' + skipped + ' 个空文件或文件夹');
+    else if (added) showStatus('已加入队列 ' + added + ' 个文件');
+    pump();
+  }
+
+  function pump() {
+    while (running < CONCURRENCY) {
+      var next = null;
+      for (var i = 0; i < queue.length; i++) {
+        if (queue[i].status === 'waiting') { next = queue[i]; break; }
+      }
+      if (!next) break;
+      startUpload(next);
+    }
+    refreshPanel();
+  }
+
+  function startUpload(item) {
+    item.status = 'uploading';
+    item.loaded = 0;
+    item.error = '';
+    running++;
+    updateRow(item);
+
+    var form = new FormData();
+    form.append('file', item.file);
+    form.append('path', item.path);
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload', true);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) { item.loaded = e.loaded; updateRow(item); }
+    };
+    xhr.onload = function () {
+      var d = null;
+      try { d = JSON.parse(xhr.responseText); } catch (e) {}
+      if (xhr.status >= 200 && xhr.status < 300 && d && d.url) {
+        item.status = 'done';
+        item.loaded = item.size;
+        scheduleReload();
+      } else if (xhr.status === 429 && item.attempt < MAX_RETRY) {
+        // 只有确定没有副作用的错误才自动重试；500/502 可能已经把文件传上了 Telegram
+        retryLater(item, (d && d.error) || '请求过于频繁');
+      } else {
+        item.status = 'error';
+        item.error = (d && d.error) || ('上传失败 (' + xhr.status + ')');
+      }
+      done(item);
+    };
+    xhr.onerror = function () {
+      if (item.attempt < MAX_RETRY) { retryLater(item, '网络错误'); } else { item.status = 'error'; item.error = '网络错误'; }
+      done(item);
+    };
+    xhr.onabort = function () { item.status = 'error'; item.error = '已取消'; done(item); };
+    xhr.send(form);
+  }
+
+  function retryLater(item, reason) {
+    item.attempt++;
+    item.status = 'waiting';
+    item.loaded = 0;
+    item.error = reason;
+    setTimeout(pump, 2000 * item.attempt);
+  }
+
+  function done(item) {
+    running--;
+    updateRow(item);
+    pump();
+  }
+
+  // 多个文件同时完成时只刷新一次列表
+  function scheduleReload() {
+    clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(load, 600);
+  }
+
+  function appendRow(item) {
+    var el = document.createElement('div');
+    el.className = 'up-item';
+
+    var line = document.createElement('div');
+    line.className = 'up-line';
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 'up-name';
+    nameEl.textContent = item.name;
+    nameEl.title = item.path ? item.name + ' → ' + item.path : item.name;
+
+    var stateEl = document.createElement('span');
+    stateEl.className = 'up-state';
+
+    var retryEl = document.createElement('button');
+    retryEl.className = 'up-link';
+    retryEl.type = 'button';
+    retryEl.textContent = '重试';
+    retryEl.style.display = 'none';
+    retryEl.addEventListener('click', function () {
+      if (item.status !== 'error') return;
+      item.status = 'waiting';
+      item.error = '';
+      item.loaded = 0;
+      item.attempt = 0;
+      updateRow(item);
+      pump();
+    });
+
+    var bar = document.createElement('div');
+    bar.className = 'up-bar';
+    var fill = document.createElement('i');
+    bar.appendChild(fill);
+
+    line.appendChild(nameEl);
+    line.appendChild(stateEl);
+    line.appendChild(retryEl);
+    el.appendChild(line);
+    el.appendChild(bar);
+
+    item.el = el;
+    item.stateEl = stateEl;
+    item.retryEl = retryEl;
+    item.barEl = bar;
+    item.fillEl = fill;
+    upBody.appendChild(el);
+    updateRow(item);
+  }
+
+  function updateRow(item) {
+    if (!item.el) return;
+    var pct = item.size ? Math.min(100, Math.round(item.loaded * 100 / item.size)) : 0;
+    if (item.status === 'uploading') {
+      item.stateEl.className = 'up-state';
+      item.stateEl.textContent = pct + '%';
+      item.fillEl.style.width = pct + '%';
+      item.barEl.className = 'up-bar';
+      item.retryEl.style.display = 'none';
+    } else if (item.status === 'waiting') {
+      item.stateEl.className = 'up-state';
+      item.stateEl.textContent = item.attempt ? '重试中' : '排队';
+      item.fillEl.style.width = pct + '%';
+      item.barEl.className = 'up-bar';
+      item.retryEl.style.display = 'none';
+    } else if (item.status === 'done') {
+      item.stateEl.className = 'up-state ok';
+      item.stateEl.textContent = '完成';
+      item.fillEl.style.width = '100%';
+      item.barEl.className = 'up-bar ok';
+      item.retryEl.style.display = 'none';
+    } else {
+      item.stateEl.className = 'up-state bad';
+      item.stateEl.textContent = item.error || '失败';
+      item.stateEl.title = item.error || '';
+      item.fillEl.style.width = '100%';
+      item.barEl.className = 'up-bar err';
+      item.retryEl.style.display = item.noRetry ? 'none' : 'inline';
+    }
+    refreshPanel();
+  }
+
+  function refreshPanel() {
+    if (!queue.length) { upPanel.classList.remove('show'); return; }
+    upPanel.classList.add('show');
+    var ok = 0, bad = 0;
+    for (var i = 0; i < queue.length; i++) {
+      if (queue[i].status === 'done') ok++;
+      else if (queue[i].status === 'error') bad++;
+    }
+    var text = '上传队列 ' + ok + '/' + queue.length;
+    if (bad) text += '，' + bad + ' 个失败';
+    upSummary.textContent = text;
+  }
+
+  upToggle.addEventListener('click', function () {
+    var collapsed = upPanel.classList.toggle('collapsed');
+    upToggle.textContent = collapsed ? '展开' : '收起';
+  });
+
+  upClear.addEventListener('click', function () {
+    var keep = [];
+    for (var i = 0; i < queue.length; i++) {
+      var it = queue[i];
+      if (it.status === 'done' || it.status === 'error') {
+        if (it.el && it.el.parentNode) it.el.parentNode.removeChild(it.el);
+      } else {
+        keep.push(it);
+      }
+    }
+    queue = keep;
+    refreshPanel();
+  });
+
+  window.addEventListener('beforeunload', function (e) {
+    if (!isBusy()) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
+  // ===== 拖拽上传 =====
+  var dragDepth = 0;
+
+  // 非文件拖拽（选中文字、链接）不拦截，保持浏览器默认行为
+  function isFileDrag(e) {
+    var types = e.dataTransfer && e.dataTransfer.types;
+    if (!types) return false;
+    for (var i = 0; i < types.length; i++) {
+      if (types[i] === 'Files' || types[i] === 'application/x-moz-file') return true;
+    }
+    return false;
+  }
+
+  document.addEventListener('dragenter', function (e) {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    if (isTrashView) return;
+    dragDepth++;
+    dropInner.textContent = '松开鼠标，上传到 ' + (currentPath ? currentPath : '根目录');
+    dropOverlay.classList.add('show');
+  });
+
+  document.addEventListener('dragover', function (e) {
+    if (!isFileDrag(e) || isTrashView) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  document.addEventListener('dragleave', function (e) {
+    if (dragDepth > 0) dragDepth--;
+    if (dragDepth === 0 || !e.relatedTarget) {
+      dragDepth = 0;
+      dropOverlay.classList.remove('show');
+    }
+  });
+
+  document.addEventListener('drop', function (e) {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    dropOverlay.classList.remove('show');
+    if (isTrashView) { showStatus('回收站不支持上传'); return; }
+    if (e.dataTransfer.files && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   });
 
   mkdirBtn.addEventListener('click', function () {
