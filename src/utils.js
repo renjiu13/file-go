@@ -93,3 +93,48 @@ export function genShortId(length = ID_LENGTH) {
   }
   return id;
 }
+
+// 规范化路径：去除首尾斜杠、折叠重复斜杠、解析 . 和 ..
+export function normalizePath(p = '') {
+  const parts = String(p).split('/');
+  const out = [];
+  for (const seg of parts) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join('/');
+}
+
+// 获取父目录路径；根目录返回 null
+export function parentOf(p = '') {
+  if (p === '') return null;
+  const i = p.lastIndexOf('/');
+  return i === -1 ? '' : p.slice(0, i);
+}
+
+// 获取路径最后一段
+export function basename(p = '') {
+  const i = p.lastIndexOf('/');
+  return i === -1 ? p : p.slice(i + 1);
+}
+
+// 拼接路径
+export function joinPath(parent, name) {
+  if (parent === '') return name;
+  return parent + '/' + name;
+}
+
+// 校验名称是否合法（用于目录名）
+export function isValidName(name = '') {
+  if (!name || name !== name.trim()) return false;
+  if (name === '.' || name === '..') return false;
+  if (/[/\\]/.test(name)) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f]/.test(name)) return false;
+  if (name.length > 100) return false;
+  return true;
+}

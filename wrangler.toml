@@ -3,8 +3,13 @@ main = "src/index.js"
 compatibility_date = "2024-11-20"
 
 [vars]
-CHAT_ID = "-1001234567890"
+CHAT_ID = "5504160733"
 
 [[kv_namespaces]]
 binding = "FILE_KV"
 id = "bf434a0de0ba4fee9dd47ec3c42e6de2"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "file_go"
+database_id = "49a2ca6c-c82c-45e4-b222-9861b951e3da"

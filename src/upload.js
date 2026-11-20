@@ -1,6 +1,6 @@
-import { MAX_SIZE, guessMime, json } from './utils.js';
+import { MAX_SIZE, guessMime, json, normalizePath } from './utils.js';
 import { uploadFileToChannel } from './telegram.js';
-import { newShortId, saveFile } from './kv.js';
+import { newShortId, saveFile, dirExists } from './kv.js';
 
 // 处理网页上传
 export async function handleUpload(request, env) {
@@ -21,9 +21,16 @@ export async function handleUpload(request, env) {
     return json({ error: '文件不能超过 20MB' }, 413);
   }
 
-  let channelFileId;
+  // 目标目录（可选，默认为根目录）
+  const rawPath = (form.get('path') || '').toString();
+  const path = normalizePath(rawPath);
+  if (!(await dirExists(env, path))) {
+    return json({ error: '目录不存在' }, 400);
+  }
+
+  let uploadResult;
   try {
-    channelFileId = await uploadFileToChannel(env, file);
+    uploadResult = await uploadFileToChannel(env, file);
   } catch (err) {
     console.error('上传到 Telegram 失败:', err);
     return json({ error: '上传到 Telegram 失败' }, 502);
@@ -32,10 +39,12 @@ export async function handleUpload(request, env) {
   const id = await newShortId(env);
   const meta = {
     id,
-    fileId: channelFileId,
+    fileId: uploadResult.fileId,
+    messageId: uploadResult.messageId,
     name: file.name,
     size: file.size,
     mime: file.type || guessMime(file.name),
+    path,
     createdAt: Date.now(),
   };
 
@@ -47,5 +56,6 @@ export async function handleUpload(request, env) {
     id,
     name: file.name,
     size: file.size,
+    path,
   });
 }

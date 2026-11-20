@@ -35,7 +35,7 @@ export async function copyFileIdToChannel(env, fileId, fileType) {
   const body = { chat_id: env.CHAT_ID };
   body[fileType] = fileId;
   const msg = await tgCall(env, method, body);
-  return extractFileId(msg, fileType);
+  return { fileId: extractFileId(msg, fileType), messageId: msg.message_id };
 }
 
 // 从消息对象中提取 file_id
@@ -72,7 +72,17 @@ export async function uploadFileToChannel(env, file) {
   if (!data.ok) {
     throw new Error(`Telegram sendDocument 失败: ${data.description}`);
   }
-  return data.result.document.file_id;
+  return { fileId: data.result.document.file_id, messageId: data.result.message_id };
+}
+
+// 删除频道中的消息（仅对 48 小时内的 bot 消息有效）
+export async function deleteChannelMessage(env, messageId) {
+  try {
+    await tgCall(env, 'deleteMessage', { chat_id: env.CHAT_ID, message_id: messageId });
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 // 获取文件在 Telegram 服务器上的路径（有效期约 1 小时）

@@ -1,6 +1,6 @@
-import { MAX_SIZE, guessMime, json } from './utils.js';
+import { MAX_SIZE, guessMime, normalizePath } from './utils.js';
 import { sendText, copyFileIdToChannel } from './telegram.js';
-import { newShortId, saveFile, checkIdempotent } from './kv.js';
+import { newShortId, saveFile, checkIdempotent, ensureDir } from './kv.js';
 
 // 从消息中提取媒体信息，统一结构
 function pickMedia(msg) {
@@ -118,9 +118,16 @@ export async function handleWebhook(request, env) {
     return new Response('ok');
   }
 
+  // 目标目录：caption 可指定目录路径（如 "images" 或 "images/2024"）
+  const caption = (msg.caption || '').trim();
+  const path = normalizePath(caption);
+
   try {
     // 转发到私有频道（使用 file_id 复制，不重新上传）
-    const channelFileId = await copyFileIdToChannel(env, media.file_id, media.type);
+    const result = await copyFileIdToChannel(env, media.file_id, media.type);
+
+    // 确保目标目录及其父目录存在
+    await ensureDir(env, path);
 
     // 生成短 ID 并保存元信息
     const id = await newShortId(env);
@@ -128,17 +135,20 @@ export async function handleWebhook(request, env) {
 
     await saveFile(env, {
       id,
-      fileId: channelFileId,
+      fileId: result.fileId,
+      messageId: result.messageId,
       name,
       size: media.file_size || 0,
       mime: media.mime_type || guessMime(name),
+      path,
       createdAt: Date.now(),
     });
 
     // 私聊回复下载链接
     if (isPrivate) {
       const origin = new URL(request.url).origin;
-      await sendText(env, chatId, `上传成功：${origin}/file/${id}`);
+      const dirText = path ? `\n目录：${path}` : '';
+      await sendText(env, chatId, `上传成功：${origin}/file/${id}${dirText}`);
     }
   } catch (err) {
     console.error('Webhook 处理失败:', err);
