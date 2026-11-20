@@ -232,12 +232,13 @@ export async function softDeleteDir(env, path, trashDate) {
     .bind(path, start, end)
     .all();
 
+  // 只更新未删除行，保留之前单独删除项的原始删除日期
   await env.DB.batch([
     env.DB.prepare(
-      'UPDATE files SET is_deleted = 1, trash_date = ?, original_path = path WHERE path = ? OR (path >= ? AND path < ?)'
+      'UPDATE files SET is_deleted = 1, trash_date = ?, original_path = path WHERE (path = ? OR (path >= ? AND path < ?)) AND is_deleted = 0'
     ).bind(trashDate, path, start, end),
     env.DB.prepare(
-      'UPDATE dirs SET is_deleted = 1, trash_date = ?, original_path = path WHERE path = ? OR (path >= ? AND path < ?)'
+      'UPDATE dirs SET is_deleted = 1, trash_date = ?, original_path = path WHERE (path = ? OR (path >= ? AND path < ?)) AND is_deleted = 0'
     ).bind(trashDate, path, start, end),
   ]);
 
@@ -246,7 +247,7 @@ export async function softDeleteDir(env, path, trashDate) {
 
 // ---------- 回收站 ----------
 // 返回按删除日期分组的对象，item 带 type 字段。
-// 已被"祖先目录删除"连带删除的子项不重复展示。
+// 被删目录里的子目录和文件也全部列出，方便核对与单独恢复。
 export async function getTrashList(env) {
   const [filesRes, dirsRes] = await env.DB.batch([
     env.DB.prepare(
@@ -257,32 +258,9 @@ export async function getTrashList(env) {
     ),
   ]);
 
-  const deletedDirs = new Set(dirsRes.results.map((r) => r.path));
-
-  // 判断某个目录路径的祖先链上是否有已删目录（不含自身）
-  function hasDeletedAncestor(p) {
-    let cur = parentOf(p);
-    while (cur !== null && cur !== '') {
-      if (deletedDirs.has(cur)) return true;
-      cur = parentOf(cur);
-    }
-    return false;
-  }
-
-  // 判断某个文件所在目录链上是否有已删目录（含所在目录自身）
-  function isFileHiddenByDeletedDir(p) {
-    let cur = p;
-    while (cur !== null && cur !== '') {
-      if (deletedDirs.has(cur)) return true;
-      cur = parentOf(cur);
-    }
-    return false;
-  }
-
   const grouped = {};
 
   for (const d of dirsRes.results) {
-    if (hasDeletedAncestor(d.path)) continue;
     const key = d.trash_date || 'unknown';
     if (!grouped[key]) grouped[key] = [];
     grouped[key].push({
@@ -294,7 +272,6 @@ export async function getTrashList(env) {
   }
 
   for (const f of filesRes.results) {
-    if (isFileHiddenByDeletedDir(f.original_path || f.path)) continue;
     const key = f.trash_date || 'unknown';
     if (!grouped[key]) grouped[key] = [];
     grouped[key].push({
@@ -358,6 +335,12 @@ export async function restoreItem(env, type, id) {
       .first();
     if (!row) return { ok: false, error: '回收站中无此目录' };
 
+    // 上级目录也被删除时禁止单独恢复，避免产生正常视图不可见的孤立目录
+    const parent = parentOf(path) || '';
+    if (!(await dirExists(env, parent))) {
+      return { ok: false, error: '上级目录已被删除，请先恢复上级目录' };
+    }
+
     const start = path + '/';
     const end = path + '0';
 
@@ -384,11 +367,13 @@ export async function restoreItem(env, type, id) {
 export async function moveItem(env, type, source, targetDir) {
   if (type === 'file') {
     const row = await env.DB.prepare(
-      'SELECT id, name FROM files WHERE id = ? AND is_deleted = 0'
+      'SELECT id, name, path FROM files WHERE id = ? AND is_deleted = 0'
     )
       .bind(source)
       .first();
     if (!row) return { ok: false, error: '文件不存在或已删除' };
+
+    if (row.path === targetDir) return { ok: false, error: '文件已在该目录下，无需移动' };
 
     const conflict = await env.DB.prepare(
       'SELECT id FROM files WHERE path = ? AND name = ? AND is_deleted = 0 AND id != ?'
@@ -414,6 +399,8 @@ export async function moveItem(env, type, source, targetDir) {
 
     const folderName = basename(oldPath);
     const newPath = joinPath(targetDir, folderName);
+
+    if (newPath === oldPath) return { ok: false, error: '目录已在该位置，无需移动' };
 
     // 目标子树内任何已存在的目录行（含回收站中的）都会引发主键冲突
     const clash = await env.DB.prepare(
