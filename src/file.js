@@ -6,7 +6,7 @@ import { isInlineMime } from './utils.js';
 export async function handleFile(request, env, id) {
   // 从 KV 读取文件元信息
   const meta = await getFileMeta(env, id);
-  if (!meta) {
+  if (!meta || meta.isDeleted) {
     return new Response('文件不存在', { status: 404 });
   }
 

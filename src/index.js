@@ -4,12 +4,12 @@ import { handleUpload } from './upload.js';
 import { handleFile } from './file.js';
 import { handleList } from './list.js';
 import { json, normalizePath, joinPath, isValidName, parentOf } from './utils.js';
-import { 
-  addDir, dirExists, initSchema, 
-  softDeleteFile, softDeleteDir, // 软删除
-  restoreItem,                   // 恢复
-  moveItem, copyItem,            // 移动、复制
-  getTrashList                   // 获取回收站列表
+import {
+  addDir, dirExists, initSchema,
+  softDeleteFile, softDeleteDir,
+  restoreItem,
+  moveItem, copyItem,
+  getTrashList, getAllDirs
 } from './kv.js';
 import { deleteChannelMessage } from './telegram.js';
 
@@ -134,6 +134,12 @@ export default {
       // --- 回收站与恢复 ---
       if (pathname === '/api/trash' && request.method === 'GET') return handleTrash(request, env);
       if (pathname === '/api/restore' && request.method === 'POST') return handleRestore(request, env);
+
+      // --- 目录树（供移动/复制弹窗使用） ---
+      if (pathname === '/api/tree' && request.method === 'GET') {
+        const dirs = await getAllDirs(env);
+        return json(dirs);
+      }
 
       // --- 移动与复制 ---
       if (pathname === '/api/move' && request.method === 'POST') return handleMoveCopy(request, env, 'move');

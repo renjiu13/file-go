@@ -3,22 +3,18 @@ import {
   ID_LENGTH,
   parentOf,
   basename,
-  normalizePath,
   joinPath
 } from './utils.js';
 
-// ---------- 初始化锁 ----------
 let schemaReady = false;
 let initPromise = null;
 
-// ---------- 数据库结构 ----------
 export async function initSchema(env) {
   if (schemaReady) return;
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
     try {
-      // 1. 基础建表（包含 idem 表，之前遗漏了）
       await env.DB.batch([
         env.DB.prepare(
           `CREATE TABLE IF NOT EXISTS files (
@@ -55,27 +51,25 @@ export async function initSchema(env) {
         env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_dirs_parent ON dirs (parent_path)'),
       ]);
 
-      // 2. 旧表迁移（使用 try-catch 防止并发导致的字段冲突报错）
+      // 旧表字段兼容（忽略"已存在"错误）
       try {
         await env.DB.prepare("ALTER TABLE dirs ADD COLUMN parent_path TEXT NOT NULL DEFAULT ''").run();
-      } catch (e) { /* 忽略已存在错误 */ }
-
+      } catch (e) {}
       try {
         await env.DB.prepare("ALTER TABLE files ADD COLUMN is_deleted INTEGER DEFAULT 0").run();
         await env.DB.prepare("ALTER TABLE files ADD COLUMN trash_date TEXT").run();
         await env.DB.prepare("ALTER TABLE files ADD COLUMN original_path TEXT").run();
-      } catch (e) { /* 忽略已存在错误 */ }
-
+      } catch (e) {}
       try {
         await env.DB.prepare("ALTER TABLE dirs ADD COLUMN is_deleted INTEGER DEFAULT 0").run();
         await env.DB.prepare("ALTER TABLE dirs ADD COLUMN trash_date TEXT").run();
         await env.DB.prepare("ALTER TABLE dirs ADD COLUMN original_path TEXT").run();
-      } catch (e) { /* 忽略已存在错误 */ }
+      } catch (e) {}
 
       schemaReady = true;
     } catch (err) {
       console.error('Schema 初始化失败:', err);
-      initPromise = null; // 失败允许重试
+      initPromise = null;
       throw err;
     }
   })();
@@ -83,19 +77,15 @@ export async function initSchema(env) {
   return initPromise;
 }
 
-// ---------- 短 ID ----------
 export async function newShortId(env) {
   for (let i = 0; i < 10; i++) {
     const id = genShortId(ID_LENGTH);
-    const row = await env.DB.prepare('SELECT id FROM files WHERE id = ?')
-      .bind(id)
-      .first();
+    const row = await env.DB.prepare('SELECT id FROM files WHERE id = ?').bind(id).first();
     if (!row) return id;
   }
   return genShortId(ID_LENGTH + 4);
 }
 
-// ---------- 保存文件 ----------
 export async function saveFile(env, meta) {
   await env.DB.prepare(
     `INSERT INTO files (id, file_id, message_id, name, size, mime, path, created_at)
@@ -114,7 +104,6 @@ export async function saveFile(env, meta) {
     .run();
 }
 
-// ---------- 读取文件 ----------
 export async function getFileMeta(env, id) {
   const row = await env.DB.prepare(
     'SELECT id, file_id, message_id, name, size, mime, path, created_at, is_deleted FROM files WHERE id = ?'
@@ -131,11 +120,10 @@ export async function getFileMeta(env, id) {
     mime: row.mime,
     path: row.path,
     createdAt: row.created_at,
-    isDeleted: row.is_deleted
+    isDeleted: !!row.is_deleted,
   };
 }
 
-// ---------- 目录管理 ----------
 export async function addDir(env, path) {
   if (path === '') return;
   const parent = parentOf(path) || '';
@@ -164,25 +152,28 @@ export async function dirExists(env, path) {
   return !!row;
 }
 
-// ---------- 列出目录 ----------
+// 获取全部活跃目录（供 /api/tree 使用）
+export async function getAllDirs(env) {
+  const res = await env.DB.prepare('SELECT path FROM dirs WHERE is_deleted = 0').all();
+  return res.results.map((r) => r.path).sort();
+}
+
 export async function listDir(env, path) {
-  // 子目录
   const dirsRes = await env.DB.prepare(
     'SELECT path FROM dirs WHERE parent_path = ? AND is_deleted = 0'
   )
     .bind(path)
     .all();
   const subDirs = dirsRes.results
-    .map(r => ({ name: basename(r.path), path: r.path }))
+    .map((r) => ({ name: basename(r.path), path: r.path }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  // 文件
   const filesRes = await env.DB.prepare(
     'SELECT id, name, size, mime, created_at FROM files WHERE path = ? AND is_deleted = 0'
   )
     .bind(path)
     .all();
-  const files = filesRes.results.map(r => ({
+  const files = filesRes.results.map((r) => ({
     id: r.id,
     name: r.name,
     size: r.size,
@@ -194,13 +185,22 @@ export async function listDir(env, path) {
   return { dirs: subDirs, files };
 }
 
-// ---------- 幂等性检查 ----------
 export async function checkIdempotent(env, updateId) {
   const res = await env.DB.prepare(
     'INSERT OR IGNORE INTO idem (update_id, created_at) VALUES (?, ?)'
   )
     .bind(updateId, Date.now())
     .run();
+
+  // 低概率清理 7 天前的幂等记录，防止无限增长
+  if (Math.random() < 0.01) {
+    try {
+      await env.DB.prepare('DELETE FROM idem WHERE created_at < ?')
+        .bind(Date.now() - 7 * 86400 * 1000)
+        .run();
+    } catch (e) {}
+  }
+
   return (res.meta.changes || 0) > 0;
 }
 
@@ -223,7 +223,6 @@ export async function softDeleteFile(env, id, trashDate) {
 }
 
 export async function softDeleteDir(env, path, trashDate) {
-  // 安全前缀范围匹配，避免 LIKE 的 _ 和 % 误伤
   const start = path + '/';
   const end = path + '0';
 
@@ -237,68 +236,110 @@ export async function softDeleteDir(env, path, trashDate) {
     env.DB.prepare(
       'UPDATE files SET is_deleted = 1, trash_date = ?, original_path = path WHERE path = ? OR (path >= ? AND path < ?)'
     ).bind(trashDate, path, start, end),
-    
     env.DB.prepare(
       'UPDATE dirs SET is_deleted = 1, trash_date = ?, original_path = path WHERE path = ? OR (path >= ? AND path < ?)'
     ).bind(trashDate, path, start, end),
-    
-    // 目录自身记录
-    env.DB.prepare(
-      'UPDATE dirs SET is_deleted = 1, trash_date = ?, original_path = path WHERE path = ?'
-    ).bind(trashDate, path),
   ]);
 
   return { ok: true, fileCount: files.results.length };
 }
 
-// ---------- 回收站列表 ----------
+// ---------- 回收站 ----------
+// 返回按删除日期分组的对象，item 带 type 字段。
+// 已被"祖先目录删除"连带删除的子项不重复展示。
 export async function getTrashList(env) {
-  const res = await env.DB.prepare(
-    `SELECT id, name, size, mime, trash_date, original_path
-     FROM files
-     WHERE is_deleted = 1
-     ORDER BY trash_date DESC, name ASC`
-  )
-    .all();
+  const [filesRes, dirsRes] = await env.DB.batch([
+    env.DB.prepare(
+      'SELECT id, name, size, mime, trash_date, original_path, path FROM files WHERE is_deleted = 1'
+    ),
+    env.DB.prepare(
+      'SELECT path, trash_date FROM dirs WHERE is_deleted = 1'
+    ),
+  ]);
+
+  const deletedDirs = new Set(dirsRes.results.map((r) => r.path));
+
+  // 判断某个目录路径的祖先链上是否有已删目录（不含自身）
+  function hasDeletedAncestor(p) {
+    let cur = parentOf(p);
+    while (cur !== null && cur !== '') {
+      if (deletedDirs.has(cur)) return true;
+      cur = parentOf(cur);
+    }
+    return false;
+  }
+
+  // 判断某个文件所在目录链上是否有已删目录（含所在目录自身）
+  function isFileHiddenByDeletedDir(p) {
+    let cur = p;
+    while (cur !== null && cur !== '') {
+      if (deletedDirs.has(cur)) return true;
+      cur = parentOf(cur);
+    }
+    return false;
+  }
 
   const grouped = {};
-  for (const r of res.results) {
-    if (!grouped[r.trash_date]) grouped[r.trash_date] = [];
-    grouped[r.trash_date].push({
-      id: r.id,
-      name: r.name,
-      size: r.size,
-      mime: r.mime,
-      originalPath: r.original_path,
+
+  for (const d of dirsRes.results) {
+    if (hasDeletedAncestor(d.path)) continue;
+    const key = d.trash_date || 'unknown';
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push({
+      type: 'dir',
+      path: d.path,
+      name: basename(d.path),
+      trashDate: d.trash_date,
     });
   }
-  return grouped;
+
+  for (const f of filesRes.results) {
+    if (isFileHiddenByDeletedDir(f.original_path || f.path)) continue;
+    const key = f.trash_date || 'unknown';
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push({
+      type: 'file',
+      id: f.id,
+      name: f.name,
+      size: f.size,
+      mime: f.mime,
+      originalPath: f.original_path,
+      trashDate: f.trash_date,
+    });
+  }
+
+  const sorted = {};
+  Object.keys(grouped).sort().reverse().forEach((k) => {
+    sorted[k] = grouped[k];
+  });
+  return sorted;
 }
 
 // ---------- 恢复 ----------
 export async function restoreItem(env, type, id) {
   if (type === 'file') {
     const row = await env.DB.prepare(
-      'SELECT original_path FROM files WHERE id = ? AND is_deleted = 1'
+      'SELECT original_path, path FROM files WHERE id = ? AND is_deleted = 1'
     )
       .bind(id)
       .first();
     if (!row) return { ok: false, error: '回收站中无此文件' };
 
-    // 检查目标位置是否已被占用
+    const parentDir = row.original_path || row.path || '';
+    if (!(await dirExists(env, parentDir))) {
+      return { ok: false, error: '原目录已被删除，请先恢复所属目录' };
+    }
+
     const exist = await env.DB.prepare(
-      'SELECT id FROM files WHERE path = ? AND is_deleted = 0'
+      'SELECT id FROM files WHERE path = ? AND name = (SELECT name FROM files WHERE id = ?) AND is_deleted = 0'
     )
-      .bind(row.original_path)
+      .bind(parentDir, id)
       .first();
     if (exist) return { ok: false, error: '原目录已有同名文件，无法恢复' };
 
     await env.DB.prepare(
       `UPDATE files
-       SET is_deleted = 0,
-           path = original_path,
-           trash_date = NULL,
-           original_path = NULL
+       SET is_deleted = 0, path = original_path, trash_date = NULL, original_path = NULL
        WHERE id = ?`
     )
       .bind(id)
@@ -308,40 +349,54 @@ export async function restoreItem(env, type, id) {
   }
 
   if (type === 'dir') {
-    // 恢复目录自身
-    await env.DB.prepare(
-      `UPDATE dirs
-       SET is_deleted = 0,
-           trash_date = NULL,
-           original_path = NULL
-       WHERE path = ? AND is_deleted = 1`
+    // 目录恢复时传入的是路径
+    const path = id;
+    const row = await env.DB.prepare(
+      'SELECT path FROM dirs WHERE path = ? AND is_deleted = 1'
     )
-      .bind(id) // 这里 id 传的是路径
-      .run();
+      .bind(path)
+      .first();
+    if (!row) return { ok: false, error: '回收站中无此目录' };
 
-    // 关联文件一起恢复（改用安全范围匹配）
-    const start = id + '/';
-    const end = id + '0';
-    await env.DB.prepare(
-      `UPDATE files
-       SET is_deleted = 0,
-           path = original_path,
-           trash_date = NULL,
-           original_path = NULL
-       WHERE (path = ? OR (path >= ? AND path < ?)) AND is_deleted = 1`
-    )
-      .bind(id, start, end)
-      .run();
+    const start = path + '/';
+    const end = path + '0';
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE dirs
+         SET is_deleted = 0, trash_date = NULL, original_path = NULL
+         WHERE path = ? OR (path >= ? AND path < ?)`
+      ).bind(path, start, end),
+      env.DB.prepare(
+        `UPDATE files
+         SET is_deleted = 0, trash_date = NULL, original_path = NULL
+         WHERE path = ? OR (path >= ? AND path < ?)`
+      ).bind(path, start, end),
+    ]);
 
     return { ok: true };
   }
 
-  return { ok: false };
+  return { ok: false, error: '未知类型' };
 }
 
 // ---------- 移动 ----------
 export async function moveItem(env, type, source, targetDir) {
   if (type === 'file') {
+    const row = await env.DB.prepare(
+      'SELECT id, name FROM files WHERE id = ? AND is_deleted = 0'
+    )
+      .bind(source)
+      .first();
+    if (!row) return { ok: false, error: '文件不存在或已删除' };
+
+    const conflict = await env.DB.prepare(
+      'SELECT id FROM files WHERE path = ? AND name = ? AND is_deleted = 0 AND id != ?'
+    )
+      .bind(targetDir, row.name, source)
+      .first();
+    if (conflict) return { ok: false, error: '目标目录下已有同名文件' };
+
     await env.DB.prepare('UPDATE files SET path = ? WHERE id = ?')
       .bind(targetDir, source)
       .run();
@@ -350,42 +405,48 @@ export async function moveItem(env, type, source, targetDir) {
 
   if (type === 'dir') {
     const oldPath = source;
+    if (!oldPath) return { ok: false, error: '不能移动根目录' };
+
+    // 防止移入自身或其子目录
+    if (targetDir === oldPath || targetDir.startsWith(oldPath + '/')) {
+      return { ok: false, error: '不能移动到自身或其子目录中' };
+    }
+
     const folderName = basename(oldPath);
     const newPath = joinPath(targetDir, folderName);
 
-    // 防止目标已有同名目录
-    const exist = await env.DB.prepare(
-      'SELECT path FROM dirs WHERE path = ? AND is_deleted = 0'
+    // 目标子树内任何已存在的目录行（含回收站中的）都会引发主键冲突
+    const clash = await env.DB.prepare(
+      'SELECT path FROM dirs WHERE path = ? OR (path >= ? AND path < ?)'
     )
-      .bind(newPath)
+      .bind(newPath, newPath + '/', newPath + '0')
       .first();
-    if (exist) return { ok: false, error: '目标目录下已有同名文件夹' };
+    if (clash) return { ok: false, error: '目标路径已被占用（可能存在于回收站中）' };
 
+    // 用 substr 精确剥离旧前缀，避免 replace 的子串污染
+    // L = 旧目录路径长度 + 1，用于 substr 跳过 "oldPath" 本身
+    const L = oldPath.length + 1;
     const start = oldPath + '/';
     const end = oldPath + '0';
 
-    // 级联更新 dirs
-    await env.DB.prepare(
-      `UPDATE dirs
-       SET path = replace(path, ?, ?)
-       WHERE path = ? OR (path >= ? AND path < ?)`
-    )
-      .bind(oldPath, newPath, oldPath, start, end)
-      .run();
-
-    // 级联更新 files
-    await env.DB.prepare(
-      `UPDATE files
-       SET path = replace(path, ?, ?)
-       WHERE path = ? OR (path >= ? AND path < ?)`
-    )
-      .bind(oldPath, newPath, oldPath, start, end)
-      .run();
+    await env.DB.batch([
+      // 目录自身：path 改为新路径，parent_path 改为目标目录
+      env.DB.prepare('UPDATE dirs SET path = ?, parent_path = ? WHERE path = ?')
+        .bind(newPath, targetDir, oldPath),
+      // 子孙目录：path 和 parent_path 同步前缀替换
+      env.DB.prepare(
+        'UPDATE dirs SET path = ? || substr(path, ?), parent_path = ? || substr(parent_path, ?) WHERE path >= ? AND path < ?'
+      ).bind(newPath, L, newPath, L, start, end),
+      // 文件（含直属文件 path = oldPath 和子孙文件）：只改 path
+      env.DB.prepare(
+        'UPDATE files SET path = ? || substr(path, ?) WHERE path = ? OR (path >= ? AND path < ?)'
+      ).bind(newPath, L, oldPath, start, end),
+    ]);
 
     return { ok: true };
   }
 
-  return { ok: false };
+  return { ok: false, error: '未知类型' };
 }
 
 // ---------- 复制 ----------
@@ -398,14 +459,25 @@ export async function copyItem(env, type, source, targetDir) {
     await env.DB.prepare(
       `INSERT INTO files (id, file_id, message_id, name, size, mime, path, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      newId, meta.fileId, meta.messageId, meta.name, meta.size, meta.mime, targetDir, Date.now()
-    ).run();
-    
+    )
+      .bind(newId, meta.fileId, meta.messageId, meta.name, meta.size, meta.mime, targetDir, Date.now())
+      .run();
     return { ok: true, newId };
   }
 
   if (type === 'dir') {
+    // 防止复制进自身或其子目录
+    if (targetDir === source || targetDir.startsWith(source + '/')) {
+      return { ok: false, error: '不能复制到自身或其子目录中' };
+    }
+
+    const firstNewPath = joinPath(targetDir, basename(source));
+    // 目标已存在同名目录（含回收站中的）会导致复制结果不可见，直接拒绝
+    const clash = await env.DB.prepare('SELECT path FROM dirs WHERE path = ?')
+      .bind(firstNewPath)
+      .first();
+    if (clash) return { ok: false, error: '目标目录下已有同名文件夹' };
+
     const stack = [{ oldPath: source, newParent: targetDir }];
     while (stack.length) {
       const { oldPath, newParent } = stack.pop();
@@ -414,23 +486,26 @@ export async function copyItem(env, type, source, targetDir) {
       await addDir(env, newPath);
 
       const files = await env.DB.prepare(
-        `SELECT * FROM files WHERE path = ? AND is_deleted = 0`
-      ).bind(oldPath).all();
-      
+        'SELECT * FROM files WHERE path = ? AND is_deleted = 0'
+      )
+        .bind(oldPath)
+        .all();
+
       for (const f of files.results) {
         const newId = await newShortId(env);
         await env.DB.prepare(
           `INSERT INTO files (id, file_id, message_id, name, size, mime, path, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(
-          newId, f.file_id, f.message_id, f.name, f.size, f.mime, newPath, Date.now()
-        ).run();
+        )
+          .bind(newId, f.file_id, f.message_id, f.name, f.size, f.mime, newPath, Date.now())
+          .run();
       }
 
       const subDirs = await env.DB.prepare(
-        `SELECT path FROM dirs WHERE parent_path = ? AND is_deleted = 0`
-      ).bind(oldPath).all();
-      
+        'SELECT path FROM dirs WHERE parent_path = ? AND is_deleted = 0'
+      )
+        .bind(oldPath)
+        .all();
       for (const d of subDirs.results) {
         stack.push({ oldPath: d.path, newParent: newPath });
       }
@@ -438,5 +513,5 @@ export async function copyItem(env, type, source, targetDir) {
     return { ok: true };
   }
 
-  return { ok: false };
+  return { ok: false, error: '未知类型' };
 }
