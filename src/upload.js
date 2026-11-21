@@ -1,6 +1,6 @@
 import { MAX_SIZE, guessMime, json, normalizePath, sanitizeName } from './utils.js';
 import { uploadFileToChannel } from './telegram.js';
-import { newShortId, saveFile, dirExists, findNameClash, uniqueName } from './kv.js';
+import { newShortId, saveFile, dirExists, findNameClash, uniqueName, getUploadRecord } from './kv.js';
 
 // 处理网页上传
 export async function handleUpload(request, env) {
@@ -28,6 +28,22 @@ export async function handleUpload(request, env) {
     return json({ error: '目录不存在' }, 400);
   }
 
+  // 前端每个排队文件带一个幂等键：客户端断连、5xx 之后的重试会命中这里的旧结果
+  const uploadKey = String(form.get('uploadKey') || '').slice(0, 64);
+  const origin = new URL(request.url).origin;
+
+  const replay = await getUploadRecord(env, uploadKey);
+  if (replay) {
+    return json({
+      url: `${origin}/file/${replay.id}`,
+      id: replay.id,
+      name: replay.name,
+      size: replay.size,
+      path: replay.path,
+      replayed: true,
+    });
+  }
+
   let uploadResult;
   try {
     uploadResult = await uploadFileToChannel(env, file);
@@ -52,11 +68,11 @@ export async function handleUpload(request, env) {
     mime: file.type || guessMime(name),
     path,
     createdAt: Date.now(),
+    uploadKey: uploadKey || undefined,
   };
 
   await saveFile(env, meta);
 
-  const origin = new URL(request.url).origin;
   return json({
     url: `${origin}/file/${id}`,
     id,

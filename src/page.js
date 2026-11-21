@@ -956,6 +956,15 @@ export function renderPage() {
     return false;
   }
 
+  // 128 位随机，够避免撞别人的键；撞键会让上传被错误重放
+  function genUploadKey() {
+    var bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    var out = '';
+    for (var i = 0; i < bytes.length; i++) out += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);
+    return out;
+  }
+
   function addFiles(files) {
     var added = 0, skipped = 0, oversize = 0;
     for (var i = 0; i < files.length; i++) {
@@ -964,7 +973,8 @@ export function renderPage() {
       if (f.size === 0) { skipped++; continue; }
       var item = {
         file: f, name: f.name, size: f.size,
-        path: currentPath, loaded: 0, status: 'waiting', error: '', attempt: 0
+        path: currentPath, loaded: 0, status: 'waiting', error: '',
+        attempt: 0, nextAt: 0, uploadKey: genUploadKey()
       };
       if (f.size > MAX_SIZE) { item.status = 'error'; item.error = '超过 20MB'; item.noRetry = true; }
       queue.push(item);
@@ -978,11 +988,14 @@ export function renderPage() {
     pump();
   }
 
+  // 未到 nextAt 的退避项不参与排队，否则 done() 里的 pump 会绕过后退时间立刻重发
   function pump() {
+    var now = Date.now();
     while (running < CONCURRENCY) {
       var next = null;
       for (var i = 0; i < queue.length; i++) {
-        if (queue[i].status === 'waiting') { next = queue[i]; break; }
+        var it = queue[i];
+        if (it.status === 'waiting' && it.nextAt <= now) { next = it; break; }
       }
       if (!next) break;
       startUpload(next);
@@ -1000,6 +1013,8 @@ export function renderPage() {
     var form = new FormData();
     form.append('file', item.file);
     form.append('path', item.path);
+    // 服务器按这个键重放首次结果，重试不会再往 Telegram 存第二份
+    form.append('uploadKey', item.uploadKey);
 
     var xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload', true);
@@ -1013,8 +1028,8 @@ export function renderPage() {
         item.status = 'done';
         item.loaded = item.size;
         scheduleReload();
-      } else if (xhr.status === 429 && item.attempt < MAX_RETRY) {
-        // 只有确定没有副作用的错误才自动重试；500/502 可能已经把文件传上了 Telegram
+      } else if ((xhr.status === 429 || xhr.status >= 500) && item.attempt < MAX_RETRY) {
+        // 429 与 5xx 都可能已经有副作用，靠 uploadKey 重放兜底；400/413 是明确拒绝，不重试
         retryLater(item, (d && d.error) || '请求过于频繁');
       } else {
         item.status = 'error';
@@ -1023,6 +1038,7 @@ export function renderPage() {
       done(item);
     };
     xhr.onerror = function () {
+      // 断连时文件可能已经落库，重试会拿回原结果而不是重复存一份
       if (item.attempt < MAX_RETRY) { retryLater(item, '网络错误'); } else { item.status = 'error'; item.error = '网络错误'; }
       done(item);
     };
@@ -1035,11 +1051,12 @@ export function renderPage() {
     item.status = 'waiting';
     item.loaded = 0;
     item.error = reason;
-    setTimeout(pump, 2000 * item.attempt);
+    item.nextAt = Date.now() + 2000 * item.attempt;
+    setTimeout(pump, item.nextAt - Date.now());
   }
 
   function done(item) {
-    running--;
+    running = Math.max(0, running - 1);
     updateRow(item);
     pump();
   }
@@ -1076,6 +1093,7 @@ export function renderPage() {
       item.error = '';
       item.loaded = 0;
       item.attempt = 0;
+      item.nextAt = 0;
       updateRow(item);
       pump();
     });
