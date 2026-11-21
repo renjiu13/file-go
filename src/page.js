@@ -27,7 +27,6 @@ export function renderPage() {
     transition: background 0.12s, border-color 0.12s;
   }
   .icon-btn:hover { background: #f5f5f5; border-color: #bbb; }
-  .icon-btn:disabled { opacity: 0.4; cursor: default; background: #fff; }
   .breadcrumb {
     font-size: 12px; color: #888; margin-bottom: 8px; overflow: hidden; white-space: nowrap;
   }
@@ -184,10 +183,6 @@ export function renderPage() {
   <div class="title-row">
     <h1 id="pageTitle">File-Go！</h1>
     <div class="actions" id="toolbar">
-      <button class="icon-btn" id="btnBack" title="后退">←</button>
-      <button class="icon-btn" id="btnForward" title="前进">→</button>
-      <button class="icon-btn" id="btnUp" title="向上">↑</button>
-      <span style="width: 6px;"></span>
       <button class="icon-btn" id="btnMkdir" title="新建文件夹">新建文件夹</button>
       <button class="icon-btn" id="btnUpload" title="上传文件">上传文件</button>
       <span style="width: 6px;"></span>
@@ -234,9 +229,6 @@ export function renderPage() {
   var $btnTrash = document.getElementById('btnTrash');
   var $btnMkdir = document.getElementById('btnMkdir');
   var $btnUpload = document.getElementById('btnUpload');
-  var $btnUp = document.getElementById('btnUp');
-  var $btnBack = document.getElementById('btnBack');
-  var $btnForward = document.getElementById('btnForward');
 
   var rawPath = location.pathname.replace(/^\\/+|\\/+$/g, '');
   var currentPath = '';
@@ -248,8 +240,6 @@ export function renderPage() {
   var anchorKey = null;    // Shift 选择锚点
   var focusedKey = null;   // 键盘焦点
   var renamingKey = null;  // 正在重命名的项 key
-  var history = [];        // 导航历史
-  var histIndex = -1;
 
   var SVG = {
     folder: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
@@ -1415,20 +1405,16 @@ export function renderPage() {
       return;
     }
     currentPath = path;
-    history.push(path);
-    histIndex = history.length - 1;
     clearSelection();
     focusedKey = null;
     renamingKey = null;
     // 更新 URL 但不跳转
     history_pushState(path);
     load();
-    updateNavButtons();
   }
 
   function history_pushState(path) {
     var url = path ? '/' + encodeURIComponent(path) : '/';
-    // 上面的 var history 是导航历史数组，这里必须显式走 window.history
     try { window.history.pushState(null, '', url); } catch (e) {}
   }
 
@@ -1437,40 +1423,6 @@ export function renderPage() {
     var p = parentPathOf(currentPath);
     navigateTo(p);
   }
-
-  function goBack() {
-    if (histIndex > 0) {
-      histIndex--;
-      currentPath = history[histIndex] || '';
-      clearSelection();
-      focusedKey = null;
-      history_pushState(currentPath);
-      load();
-      updateNavButtons();
-    }
-  }
-
-  function goForward() {
-    if (histIndex < history.length - 1) {
-      histIndex++;
-      currentPath = history[histIndex] || '';
-      clearSelection();
-      focusedKey = null;
-      history_pushState(currentPath);
-      load();
-      updateNavButtons();
-    }
-  }
-
-  function updateNavButtons() {
-    $btnBack.disabled = histIndex <= 0;
-    $btnForward.disabled = histIndex >= history.length - 1;
-    $btnUp.disabled = !currentPath || isTrashView;
-  }
-
-  $btnUp.addEventListener('click', goUp);
-  $btnBack.addEventListener('click', goBack);
-  $btnForward.addEventListener('click', goForward);
 
   // 浏览器后退/前进
   window.addEventListener('popstate', function () {
@@ -1496,16 +1448,13 @@ export function renderPage() {
       $btnTrash.textContent = '返回';
       $btnMkdir.style.display = 'none';
       $btnUpload.style.display = 'none';
-      $btnUp.style.display = 'none';
     } else {
       $pageTitle.textContent = 'File-Go！';
       $btnTrash.textContent = '回收站';
       $btnMkdir.style.display = 'inline-flex';
       $btnUpload.style.display = 'inline-flex';
-      $btnUp.style.display = 'inline-flex';
     }
     load();
-    updateNavButtons();
   }
 
   $btnMkdir.addEventListener('click', function () {
@@ -1564,9 +1513,6 @@ export function renderPage() {
   // ============================================================
   // 初始化
   // ============================================================
-  history.push(currentPath);
-  histIndex = 0;
-  updateNavButtons();
   load();
 
 })();
