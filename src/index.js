@@ -130,10 +130,14 @@ async function handleRename(request, env) {
   const invalid = nameError(newName);
   if (invalid) return json({ error: invalid }, 400);
 
-  const res = await renameItem(env, type, source, newName);
+  // 同名冲突策略由前端冲突弹窗决定；未指定时后端不擅自处置
+  const opts = { trashDate: getBeijingDate() };
+  if (['overwrite', 'skip', 'rename'].indexOf(body.onConflict) >= 0) opts.onConflict = body.onConflict;
+
+  const res = await renameItem(env, type, source, newName, opts);
   if (res.conflict) return json(res, 409);
   if (!res.ok) return json({ error: res.error || '重命名失败' }, 400);
-  return json({ ok: true, name: res.name || null, path: res.path || null });
+  return json({ ok: true, skipped: !!res.skipped, name: res.name || null, path: res.path || null });
 }
 
 // 批量放入回收站

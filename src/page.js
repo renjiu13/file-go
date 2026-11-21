@@ -538,6 +538,9 @@ export function renderPage() {
     var isCheckbox = e.target.classList.contains('chk');
     if (isCheckbox) return; // checkbox 自己处理
 
+    // 单击只做选择，进入目录/打开文件交给双击与 Enter，否则 <a> 的默认跳转会把整页刷掉
+    if (e.target.tagName === 'A') e.preventDefault();
+
     if (e.shiftKey) {
       selectRange(key);
     } else if (e.ctrlKey || e.metaKey) {
@@ -728,8 +731,9 @@ export function renderPage() {
     if (!newName) { showStatus('名称不能为空'); return; }
     if (newName === it.name) { cancelRename(); return; }
 
+    // 本文件整体是模板字符串：正则里的每个反斜杠都要写成两条，否则到浏览器就变成普通字母
     // 前端快速校验非法字符（与后端规则一致）
-    if (/[<>:"\\\/|?*\u0000-\u001f\u007f]/.test(newName)) {
+    if (/[<>:"/\\\\|?*\\u0000-\\u001f\\u007f]/.test(newName)) {
       showStatus('名称不能包含 < > : " / \\ | ? * 等字符'); return;
     }
     if (/^[. ]|[. ]$/.test(newName)) {
@@ -738,7 +742,7 @@ export function renderPage() {
     if (newName === '.' || newName === '..') {
       showStatus('名称不能是 . 或 ..'); return;
     }
-    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(newName)) {
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\\..*)?$/i.test(newName)) {
       showStatus('名称是 Windows 保留名，请换一个'); return;
     }
 
@@ -1193,7 +1197,7 @@ export function renderPage() {
     if (!bar || !txt) return;
     var pct = total ? Math.round(done / total * 100) : 0;
     bar.style.width = pct + '%';
-    txt.textContent = txt.textContent.replace(/\(\d+\/\d+\)/, '(' + done + '/' + total + ')');
+    txt.textContent = txt.textContent.replace(/\\(\\d+\\/\\d+\\)/, '(' + done + '/' + total + ')');
   }
 
   function hideProgress() { closeModal(); }
@@ -1424,7 +1428,8 @@ export function renderPage() {
 
   function history_pushState(path) {
     var url = path ? '/' + encodeURIComponent(path) : '/';
-    try { history.pushState(null, '', url); } catch (e) {}
+    // 上面的 var history 是导航历史数组，这里必须显式走 window.history
+    try { window.history.pushState(null, '', url); } catch (e) {}
   }
 
   function goUp() {
