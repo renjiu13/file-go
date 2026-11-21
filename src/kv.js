@@ -204,20 +204,25 @@ export async function getAllDirs(env) {
 }
 
 export async function listDir(env, path) {
-  const dirsRes = await env.DB.prepare(
-    'SELECT path FROM dirs WHERE parent_path = ? AND is_deleted = 0'
-  )
-    .bind(path)
-    .all();
+  const [dirsRes, filesRes, trashDirsRes, trashFilesRes] = await env.DB.batch([
+    env.DB.prepare(
+      'SELECT path, created_at FROM dirs WHERE parent_path = ? AND is_deleted = 0'
+    ).bind(path),
+    env.DB.prepare(
+      'SELECT id, name, size, mime, created_at FROM files WHERE path = ? AND is_deleted = 0'
+    ).bind(path),
+    // 回收站不单独成页：软删除记录仍带着原路径，按原路径回到所在目录展示
+    env.DB.prepare(
+      'SELECT path, created_at, trash_date FROM dirs WHERE parent_path = ? AND is_deleted = 1'
+    ).bind(path),
+    env.DB.prepare(
+      'SELECT id, name, size, mime, created_at, trash_date FROM files WHERE path = ? AND is_deleted = 1'
+    ).bind(path),
+  ]);
   const subDirs = dirsRes.results
-    .map((r) => ({ name: basename(r.path), path: r.path }))
+    .map((r) => ({ name: basename(r.path), path: r.path, createdAt: r.created_at }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const filesRes = await env.DB.prepare(
-    'SELECT id, name, size, mime, created_at FROM files WHERE path = ? AND is_deleted = 0'
-  )
-    .bind(path)
-    .all();
   const files = filesRes.results.map((r) => ({
     id: r.id,
     name: r.name,
@@ -227,7 +232,28 @@ export async function listDir(env, path) {
   }));
   files.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
-  return { dirs: subDirs, files };
+  const deleted = [
+    ...trashDirsRes.results.map((r) => ({
+      type: 'dir',
+      deleted: true,
+      path: r.path,
+      name: basename(r.path),
+      createdAt: r.created_at,
+      trashDate: r.trash_date,
+    })),
+    ...trashFilesRes.results.map((r) => ({
+      type: 'file',
+      deleted: true,
+      id: r.id,
+      name: r.name,
+      size: r.size,
+      mime: r.mime,
+      createdAt: r.created_at,
+      trashDate: r.trash_date,
+    })),
+  ];
+
+  return { dirs: subDirs, files, deleted };
 }
 
 export async function checkIdempotent(env, updateId) {
@@ -338,36 +364,53 @@ export async function getTrashList(env) {
 }
 
 // ---------- 恢复 ----------
-export async function restoreItem(env, type, id) {
+// opts: { onConflict: 'overwrite'|'skip'|'rename', trashDate, targetDir }
+export async function restoreItem(env, type, id, opts) {
+  opts = opts || {};
+  const onConflict = opts.onConflict;
+  const trashDate = opts.trashDate;
+
   if (type === 'file') {
     const row = await env.DB.prepare(
-      'SELECT original_path, path FROM files WHERE id = ? AND is_deleted = 1'
+      'SELECT original_path, path, name FROM files WHERE id = ? AND is_deleted = 1'
     )
       .bind(id)
       .first();
     if (!row) return { ok: false, error: '回收站中无此文件' };
 
-    const parentDir = row.original_path || row.path || '';
-    if (!(await dirExists(env, parentDir))) {
+    const targetDir = opts.targetDir !== undefined
+      ? opts.targetDir
+      : (row.original_path || row.path || '');
+
+    if (!(await dirExists(env, targetDir))) {
       return { ok: false, error: '原目录已被删除，请先恢复所属目录' };
     }
 
-    const exist = await env.DB.prepare(
-      'SELECT id FROM files WHERE path = ? AND name = (SELECT name FROM files WHERE id = ?) AND is_deleted = 0'
-    )
-      .bind(parentDir, id)
-      .first();
-    if (exist) return { ok: false, error: '原目录已有同名文件，无法恢复' };
+    const name = row.name;
+    const clash = await findNameClash(env, targetDir, name, { id: id });
+    if (clash) {
+      if (!onConflict) return conflictResult(name, targetDir, clash);
+      if (onConflict === 'skip') return { ok: true, skipped: true };
+      if (onConflict === 'overwrite') {
+        if (clash.kind === 'dir') return { ok: false, error: '同名项是文件夹，请改用保留两者或跳过' };
+        if (!trashDate) return { ok: false, error: '缺少回收站日期' };
+        await softDeleteFile(env, clash.id, trashDate);
+      }
+    }
+
+    const finalName = onConflict === 'rename'
+      ? await uniqueName(env, targetDir, name, { id: id })
+      : name;
 
     await env.DB.prepare(
       `UPDATE files
-       SET is_deleted = 0, path = original_path, trash_date = NULL, original_path = NULL
+       SET is_deleted = 0, path = ?, name = ?, trash_date = NULL, original_path = NULL
        WHERE id = ?`
     )
-      .bind(id)
+      .bind(targetDir, finalName, id)
       .run();
 
-    return { ok: true };
+    return { ok: true, name: finalName };
   }
 
   if (type === 'dir') {
@@ -380,32 +423,159 @@ export async function restoreItem(env, type, id) {
       .first();
     if (!row) return { ok: false, error: '回收站中无此目录' };
 
-    // 上级目录也被删除时禁止单独恢复，避免产生正常视图不可见的孤立目录
-    const parent = parentOf(path) || '';
-    if (!(await dirExists(env, parent))) {
+    const folderName = basename(path);
+    const origParent = parentOf(path) || '';
+    const targetDir = opts.targetDir !== undefined ? opts.targetDir : origParent;
+
+    if (!(await dirExists(env, targetDir))) {
       return { ok: false, error: '上级目录已被删除，请先恢复上级目录' };
     }
 
-    const start = path + '/';
-    const end = path + '0';
+    let newPath = joinPath(targetDir, folderName);
 
+    const clash = await findNameClash(env, targetDir, folderName, { path: path });
+    if (clash) {
+      if (!onConflict) return conflictResult(folderName, targetDir, clash);
+      if (onConflict === 'skip') return { ok: true, skipped: true };
+      if (onConflict === 'overwrite') return { ok: false, error: DIR_NO_OVERWRITE };
+      newPath = joinPath(targetDir, await uniqueName(env, targetDir, folderName, { path: path }));
+    }
+
+    if (await isPathSubtreeBusy(env, newPath)) {
+      return { ok: false, error: '目标路径已被占用（可能存在于回收站中）' };
+    }
+
+    // 如果目标位置和原路径不同，需要先移动再恢复
+    if (newPath !== path) {
+      await relocateDir(env, path, newPath, targetDir);
+    }
+
+    const start = newPath + '/';
+    const end = newPath + '0';
+
+    // relocateDir 可能已把路径改成 newPath，统一用 newPath 匹配
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE dirs
          SET is_deleted = 0, trash_date = NULL, original_path = NULL
          WHERE path = ? OR (path >= ? AND path < ?)`
-      ).bind(path, start, end),
+      ).bind(newPath, start, end),
       env.DB.prepare(
         `UPDATE files
          SET is_deleted = 0, trash_date = NULL, original_path = NULL
          WHERE path = ? OR (path >= ? AND path < ?)`
-      ).bind(path, start, end),
+      ).bind(newPath, start, end),
     ]);
 
     return { ok: true };
   }
 
   return { ok: false, error: '未知类型' };
+}
+
+// ---------- 批量操作 ----------
+// 统一返回：{ success, skipped, failed, results: [{type, source, ok, ...}] }
+// 逐项执行，部分失败不影响其他项；冲突缺省时直接返回冲突项。
+
+function makeBatchResult() {
+  return { success: 0, skipped: 0, failed: 0, results: [] };
+}
+
+function pushResult(out, item, res) {
+  const entry = { type: item.type, source: item.source || item.id || item.path };
+  if (res.ok && res.skipped) {
+    out.skipped++;
+    entry.ok = true;
+    entry.skipped = true;
+  } else if (res.ok) {
+    out.success++;
+    entry.ok = true;
+    if (res.name) entry.name = res.name;
+    if (res.path) entry.path = res.path;
+    if (res.newId) entry.newId = res.newId;
+  } else if (res.conflict) {
+    out.failed++;
+    entry.ok = false;
+    entry.conflict = true;
+    entry.clashKind = res.clashKind;
+    entry.clashName = res.clashName;
+    entry.name = res.name;
+    entry.targetDir = res.targetDir;
+    entry.error = res.error;
+  } else {
+    out.failed++;
+    entry.ok = false;
+    entry.error = res.error || '操作失败';
+  }
+  out.results.push(entry);
+}
+
+// 批量放入回收站
+export async function batchTrash(env, items, trashDate) {
+  const out = makeBatchResult();
+  for (const it of items) {
+    try {
+      if (it.type === 'file') {
+        const res = await softDeleteFile(env, it.id, trashDate);
+        pushResult(out, it, res.ok ? { ok: true } : { ok: false, error: '文件不存在或已删除' });
+      } else if (it.type === 'dir') {
+        const res = await softDeleteDir(env, it.path, trashDate);
+        pushResult(out, it, res.ok ? { ok: true } : { ok: false, error: '删除失败' });
+      } else {
+        pushResult(out, it, { ok: false, error: '未知类型' });
+      }
+    } catch (e) {
+      pushResult(out, it, { ok: false, error: e.message || '系统错误' });
+    }
+  }
+  return out;
+}
+
+// 批量恢复
+export async function batchRestore(env, items, opts = {}) {
+  const out = makeBatchResult();
+  // overwrite 时需要回收站日期归档被替换项
+  const restoreOpts = { ...opts, trashDate: opts.trashDate };
+  for (const it of items) {
+    try {
+      const id = it.type === 'dir' ? it.path : it.id;
+      const res = await restoreItem(env, it.type, id, restoreOpts);
+      pushResult(out, it, res);
+    } catch (e) {
+      pushResult(out, it, { ok: false, error: e.message || '系统错误' });
+    }
+  }
+  return out;
+}
+
+// 批量移动
+export async function batchMove(env, items, targetDir, opts = {}) {
+  const out = makeBatchResult();
+  for (const it of items) {
+    try {
+      const source = it.type === 'dir' ? it.path : it.id;
+      const res = await moveItem(env, it.type, source, targetDir, opts);
+      pushResult(out, it, res);
+    } catch (e) {
+      pushResult(out, it, { ok: false, error: e.message || '系统错误' });
+    }
+  }
+  return out;
+}
+
+// 批量复制
+export async function batchCopy(env, items, targetDir, opts = {}) {
+  const out = makeBatchResult();
+  for (const it of items) {
+    try {
+      const source = it.type === 'dir' ? it.path : it.id;
+      const res = await copyItem(env, it.type, source, targetDir, opts);
+      pushResult(out, it, res);
+    } catch (e) {
+      pushResult(out, it, { ok: false, error: e.message || '系统错误' });
+    }
+  }
+  return out;
 }
 
 // ---------- 同名冲突 ----------
@@ -499,7 +669,10 @@ async function isPathSubtreeBusy(env, path) {
 }
 
 // ---------- 重命名 ----------
-export async function renameItem(env, type, source, newName) {
+export async function renameItem(env, type, source, newName, opts) {
+  opts = opts || {};
+  const onConflict = opts.onConflict;
+
   if (type === 'file') {
     const row = await env.DB.prepare('SELECT name, path FROM files WHERE id = ? AND is_deleted = 0')
       .bind(source)
@@ -508,10 +681,22 @@ export async function renameItem(env, type, source, newName) {
     if (row.name === newName) return { ok: false, error: '名称未改变' };
 
     const clash = await findNameClash(env, row.path, newName, { id: source });
-    if (clash) return conflictResult(newName, row.path, clash);
+    if (clash) {
+      if (!onConflict) return conflictResult(newName, row.path, clash);
+      if (onConflict === 'skip') return { ok: true, skipped: true };
+      if (onConflict === 'overwrite') {
+        if (clash.kind === 'dir') return { ok: false, error: '同名项是文件夹，请改用保留两者或跳过' };
+        if (!opts.trashDate) return { ok: false, error: '缺少回收站日期' };
+        await softDeleteFile(env, clash.id, opts.trashDate);
+      }
+    }
 
-    await env.DB.prepare('UPDATE files SET name = ? WHERE id = ?').bind(newName, source).run();
-    return { ok: true, name: newName, path: row.path };
+    const finalName = onConflict === 'rename'
+      ? await uniqueName(env, row.path, newName, { id: source })
+      : newName;
+
+    await env.DB.prepare('UPDATE files SET name = ? WHERE id = ?').bind(finalName, source).run();
+    return { ok: true, name: finalName, path: row.path };
   }
 
   if (type === 'dir') {
@@ -523,15 +708,23 @@ export async function renameItem(env, type, source, newName) {
     if (basename(oldPath) === newName) return { ok: false, error: '名称未改变' };
 
     const clash = await findNameClash(env, parent, newName, { path: oldPath });
-    if (clash) return conflictResult(newName, parent, clash);
+    if (clash) {
+      if (!onConflict) return conflictResult(newName, parent, clash);
+      if (onConflict === 'skip') return { ok: true, skipped: true };
+      if (onConflict === 'overwrite') return { ok: false, error: DIR_NO_OVERWRITE };
+    }
 
-    const newPath = joinPath(parent, newName);
+    const finalName = onConflict === 'rename'
+      ? await uniqueName(env, parent, newName, { path: oldPath })
+      : newName;
+
+    const newPath = joinPath(parent, finalName);
     if (await isPathSubtreeBusy(env, newPath)) {
       return { ok: false, error: '该名称已被占用（可能位于回收站）' };
     }
 
     await relocateDir(env, oldPath, newPath, parent);
-    return { ok: true, path: newPath, oldPath };
+    return { ok: true, path: newPath, oldPath, name: finalName };
   }
 
   return { ok: false, error: '未知类型' };

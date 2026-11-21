@@ -9,7 +9,8 @@ import {
   softDeleteFile, softDeleteDir,
   restoreItem,
   moveItem, copyItem, renameItem, findNameClash, conflictResult,
-  getTrashList, getAllDirs
+  getTrashList, getAllDirs,
+  batchTrash, batchRestore, batchMove, batchCopy
 } from './kv.js';
 import { deleteChannelMessage } from './telegram.js';
 
@@ -81,11 +82,16 @@ async function handleTrash(request, env) {
 async function handleRestore(request, env) {
   let body;
   try { body = await request.json(); } catch (err) { return json({ error: '无效请求' }, 400); }
-  
-  const { type, id, path } = body;
-  const res = await restoreItem(env, type, id, path);
+
+  const { type, id } = body;
+  const opts = { trashDate: getBeijingDate() };
+  if (['overwrite', 'skip', 'rename'].indexOf(body.onConflict) >= 0) opts.onConflict = body.onConflict;
+  if (body.targetDir !== undefined) opts.targetDir = normalizePath(body.targetDir || '');
+
+  const res = await restoreItem(env, type, id, opts);
+  if (res.conflict) return json(res, 409);
   if (!res.ok) return json({ error: res.error || '恢复失败' }, 400);
-  return json({ ok: true });
+  return json({ ok: true, name: res.name || null, path: res.path || null });
 }
 
 // 移动 / 复制
@@ -130,6 +136,57 @@ async function handleRename(request, env) {
   return json({ ok: true, name: res.name || null, path: res.path || null });
 }
 
+// 批量放入回收站
+async function handleBatchTrash(request, env) {
+  let body;
+  try { body = await request.json(); } catch (err) { return json({ error: '无效请求' }, 400); }
+  const items = Array.isArray(body.items) ? body.items : [];
+  if (!items.length) return json({ error: '请先选择要删除的项目' }, 400);
+  const res = await batchTrash(env, items, getBeijingDate());
+  return json(res);
+}
+
+// 批量恢复
+async function handleBatchRestore(request, env) {
+  let body;
+  try { body = await request.json(); } catch (err) { return json({ error: '无效请求' }, 400); }
+  const items = Array.isArray(body.items) ? body.items : [];
+  if (!items.length) return json({ error: '请先选择要恢复的项目' }, 400);
+  const opts = { trashDate: getBeijingDate() };
+  if (['overwrite', 'skip', 'rename'].indexOf(body.onConflict) >= 0) opts.onConflict = body.onConflict;
+  if (body.targetDir !== undefined) opts.targetDir = normalizePath(body.targetDir || '');
+  const res = await batchRestore(env, items, opts);
+  return json(res);
+}
+
+// 批量移动
+async function handleBatchMove(request, env) {
+  let body;
+  try { body = await request.json(); } catch (err) { return json({ error: '无效请求' }, 400); }
+  const items = Array.isArray(body.items) ? body.items : [];
+  const target = normalizePath(body.targetDir || '');
+  if (!items.length) return json({ error: '请先选择要移动的项目' }, 400);
+  if (!(await dirExists(env, target))) return json({ error: '目标目录不存在' }, 400);
+  const opts = { trashDate: getBeijingDate() };
+  if (['overwrite', 'skip', 'rename'].indexOf(body.onConflict) >= 0) opts.onConflict = body.onConflict;
+  const res = await batchMove(env, items, target, opts);
+  return json(res);
+}
+
+// 批量复制
+async function handleBatchCopy(request, env) {
+  let body;
+  try { body = await request.json(); } catch (err) { return json({ error: '无效请求' }, 400); }
+  const items = Array.isArray(body.items) ? body.items : [];
+  const target = normalizePath(body.targetDir || '');
+  if (!items.length) return json({ error: '请先选择要复制的项目' }, 400);
+  if (!(await dirExists(env, target))) return json({ error: '目标目录不存在' }, 400);
+  const opts = { trashDate: getBeijingDate() };
+  if (['overwrite', 'skip', 'rename'].indexOf(body.onConflict) >= 0) opts.onConflict = body.onConflict;
+  const res = await batchCopy(env, items, target, opts);
+  return json(res);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -168,6 +225,12 @@ export default {
       if (pathname === '/api/move' && request.method === 'POST') return handleMoveCopy(request, env, 'move');
       if (pathname === '/api/copy' && request.method === 'POST') return handleMoveCopy(request, env, 'copy');
       if (pathname === '/api/rename' && request.method === 'POST') return handleRename(request, env);
+
+      // --- 批量操作 ---
+      if (pathname === '/api/batch-trash' && request.method === 'POST') return handleBatchTrash(request, env);
+      if (pathname === '/api/batch-restore' && request.method === 'POST') return handleBatchRestore(request, env);
+      if (pathname === '/api/batch-move' && request.method === 'POST') return handleBatchMove(request, env);
+      if (pathname === '/api/batch-copy' && request.method === 'POST') return handleBatchCopy(request, env);
 
       // --- 文件下载 ---
       const fileMatch = pathname.match(/^\/file\/([A-Za-z0-9]{10,14})$/);
