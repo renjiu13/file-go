@@ -128,13 +128,49 @@ export function joinPath(parent, name) {
   return parent + '/' + name;
 }
 
-// 校验名称是否合法（用于目录名）
+// Windows 名称禁止的字符与控制字符（拆成两份是因为带 /g 的 test 有 lastIndex 状态）
+const ILLEGAL_RE = /[<>:"/\\|?*\u0000-\u001f\u007f]/;
+const ILLEGAL_RE_G = /[<>:"/\\|?*\u0000-\u001f\u007f]/g;
+// 保留设备名，不区分大小写，CON.txt 这类带扩展名的形式同样被 Windows 拒绝
+const RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+const NAME_MAX = 100;
+
+// 校验名称是否合法（用于目录名与重命名）
 export function isValidName(name = '') {
-  if (!name || name !== name.trim()) return false;
+  if (!name) return false;
+  if (name !== name.trim()) return false;
   if (name === '.' || name === '..') return false;
-  if (/[/\\]/.test(name)) return false;
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f]/.test(name)) return false;
-  if (name.length > 100) return false;
+  // Windows 会静默去掉结尾的点和空格，直接拒绝比静默改写更清楚
+  if (/[. ]$/.test(name)) return false;
+  if (ILLEGAL_RE.test(name)) return false;
+  if (RESERVED_RE.test(name)) return false;
+  if (name.length > NAME_MAX) return false;
   return true;
+}
+
+// 校验名称并返回拒绝原因，用于给用户可直接阅读的提示
+export function nameError(name) {
+  if (!name || !name.trim()) return '名称不能为空';
+  if (name !== name.trim()) return '名称首尾不能有空格';
+  if (name === '.' || name === '..') return '名称不能是 . 或 ..';
+  if (/[. ]$/.test(name)) return '名称不能以点或空格结尾';
+  if (ILLEGAL_RE.test(name)) return '名称不能包含 < > : " / \\ | ? * 等字符';
+  if (RESERVED_RE.test(name)) return '名称是 Windows 保留名，请换一个';
+  if (name.length > NAME_MAX) return `名称不能超过 ${NAME_MAX} 个字符`;
+  return '';
+}
+
+// 上传文件名来自用户本地磁盘，可能带非 Windows 字符；用下划线替换而不是拒绝，
+// 保证存进来的名字在任何系统下都能正常落地，也不会因删除字符而撞名。
+export function sanitizeName(name = '') {
+  let out = String(name).replace(ILLEGAL_RE_G, '_').replace(/[. ]+$/, '').trim();
+  if (!out) out = 'file';
+  if (RESERVED_RE.test(out)) out = '_' + out;
+  if (out.length > NAME_MAX) {
+    const dot = out.lastIndexOf('.');
+    const ext = dot > 0 && out.length - dot <= 12 ? out.slice(dot) : '';
+    out = out.slice(0, NAME_MAX - ext.length).replace(/[. ]+$/, '') + ext;
+  }
+  return out;
 }

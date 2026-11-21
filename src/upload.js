@@ -1,6 +1,6 @@
-import { MAX_SIZE, guessMime, json, normalizePath } from './utils.js';
+import { MAX_SIZE, guessMime, json, normalizePath, sanitizeName } from './utils.js';
 import { uploadFileToChannel } from './telegram.js';
-import { newShortId, saveFile, dirExists } from './kv.js';
+import { newShortId, saveFile, dirExists, findNameClash, uniqueName } from './kv.js';
 
 // 处理网页上传
 export async function handleUpload(request, env) {
@@ -41,13 +41,15 @@ export async function handleUpload(request, env) {
   }
 
   const id = await newShortId(env);
+  // 文件名来自用户本地磁盘：先洗成 Windows 合法名，再按「保留两者」避让同名项
+  const name = await uniqueName(env, path, sanitizeName(file.name));
   const meta = {
     id,
     fileId: uploadResult.fileId,
     messageId: uploadResult.messageId,
-    name: file.name,
+    name,
     size: file.size,
-    mime: file.type || guessMime(file.name),
+    mime: file.type || guessMime(name),
     path,
     createdAt: Date.now(),
   };
@@ -58,7 +60,7 @@ export async function handleUpload(request, env) {
   return json({
     url: `${origin}/file/${id}`,
     id,
-    name: file.name,
+    name,
     size: file.size,
     path,
   });

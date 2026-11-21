@@ -3,12 +3,12 @@ import { handleWebhook } from './webhook.js';
 import { handleUpload } from './upload.js';
 import { handleFile } from './file.js';
 import { handleList } from './list.js';
-import { json, normalizePath, joinPath, isValidName, parentOf } from './utils.js';
+import { json, normalizePath, joinPath, nameError, parentOf } from './utils.js';
 import {
   addDir, dirExists, initSchema,
   softDeleteFile, softDeleteDir,
   restoreItem,
-  moveItem, copyItem,
+  moveItem, copyItem, renameItem, findNameClash, conflictResult,
   getTrashList, getAllDirs
 } from './kv.js';
 import { deleteChannelMessage } from './telegram.js';
@@ -31,12 +31,14 @@ async function handleMkdir(request, env) {
   const parent = normalizePath(body.parent || '');
   const name = (body.name || '').trim();
 
-  if (!isValidName(name)) return json({ error: '目录名不合法' }, 400);
+  const invalid = nameError(name);
+  if (invalid) return json({ error: invalid }, 400);
   if (!(await dirExists(env, parent))) return json({ error: '父目录不存在' }, 400);
 
-  const path = joinPath(parent, name);
-  if (await dirExists(env, path)) return json({ error: '目录已存在' }, 409);
+  const clash = await findNameClash(env, parent, name);
+  if (clash) return json(conflictResult(name, parent, clash), 409);
 
+  const path = joinPath(parent, name);
   await addDir(env, path);
   return json({ ok: true, path });
 }
@@ -91,20 +93,41 @@ async function handleMoveCopy(request, env, action) {
   let body;
   try { body = await request.json(); } catch (err) { return json({ error: '无效请求' }, 400); }
 
-  const { type, source, targetDir } = body; // source: 文件的 id 或目录的 path
-  const target = normalizePath(targetDir || '');
-  
+  const { type, source } = body; // source: 文件的 id 或目录的 path
+  const target = normalizePath(body.targetDir || '');
+
+  if (!source) return json({ error: '缺少操作对象' }, 400);
   if (!(await dirExists(env, target))) return json({ error: '目标目录不存在' }, 400);
 
-  if (action === 'move') {
-    const res = await moveItem(env, type, source, target);
-    if (!res.ok) return json({ error: res.error || '移动失败' }, 400);
-    return json({ ok: true });
-  } else {
-    const res = await copyItem(env, type, source, target);
-    if (!res.ok) return json({ error: res.error || '复制失败' }, 400);
-    return json({ ok: true });
-  }
+  // 同名冲突策略由前端冲突弹窗决定；未指定时后端不擅自处置
+  const opts = { trashDate: getBeijingDate() };
+  if (['overwrite', 'skip', 'rename'].indexOf(body.onConflict) >= 0) opts.onConflict = body.onConflict;
+
+  const res = action === 'move'
+    ? await moveItem(env, type, source, target, opts)
+    : await copyItem(env, type, source, target, opts);
+
+  if (res.conflict) return json(res, 409);
+  if (!res.ok) return json({ error: res.error || '操作失败' }, 400);
+  return json({ ok: true, skipped: !!res.skipped, name: res.name || null, path: res.path || null });
+}
+
+// 重命名
+async function handleRename(request, env) {
+  let body;
+  try { body = await request.json(); } catch (err) { return json({ error: '无效请求' }, 400); }
+
+  const { type, source } = body;
+  const newName = String(body.newName || '').trim();
+
+  if (!source) return json({ error: '缺少操作对象' }, 400);
+  const invalid = nameError(newName);
+  if (invalid) return json({ error: invalid }, 400);
+
+  const res = await renameItem(env, type, source, newName);
+  if (res.conflict) return json(res, 409);
+  if (!res.ok) return json({ error: res.error || '重命名失败' }, 400);
+  return json({ ok: true, name: res.name || null, path: res.path || null });
 }
 
 export default {
@@ -141,9 +164,10 @@ export default {
         return json(dirs);
       }
 
-      // --- 移动与复制 ---
+      // --- 移动、复制与重命名 ---
       if (pathname === '/api/move' && request.method === 'POST') return handleMoveCopy(request, env, 'move');
       if (pathname === '/api/copy' && request.method === 'POST') return handleMoveCopy(request, env, 'copy');
+      if (pathname === '/api/rename' && request.method === 'POST') return handleRename(request, env);
 
       // --- 文件下载 ---
       const fileMatch = pathname.match(/^\/file\/([A-Za-z0-9]{10,14})$/);

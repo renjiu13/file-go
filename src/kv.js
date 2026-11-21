@@ -363,8 +363,141 @@ export async function restoreItem(env, type, id) {
   return { ok: false, error: '未知类型' };
 }
 
+// ---------- 同名冲突 ----------
+// Windows 语义：同一目录内名称不区分大小写且唯一，文件与文件夹共用一个命名空间。
+// exclude 形如 { id } 或 { path }，用于重命名/移动时排除自身。
+export async function findNameClash(env, parentPath, name, exclude) {
+  const excludeId = exclude && exclude.id ? exclude.id : null;
+  const excludePath = exclude && exclude.path ? exclude.path : null;
+
+  const sql = excludeId
+    ? 'SELECT id, name FROM files WHERE path = ? AND LOWER(name) = LOWER(?) AND is_deleted = 0 AND id != ?'
+    : 'SELECT id, name FROM files WHERE path = ? AND LOWER(name) = LOWER(?) AND is_deleted = 0';
+  const stmt = excludeId
+    ? env.DB.prepare(sql).bind(parentPath, name, excludeId)
+    : env.DB.prepare(sql).bind(parentPath, name);
+  const fileRow = await stmt.first();
+  if (fileRow) return { kind: 'file', id: fileRow.id, name: fileRow.name };
+
+  // 回收站中的目录仍占用 path 主键，所以这里不过滤 is_deleted
+  const dirsRes = await env.DB.prepare('SELECT path FROM dirs WHERE parent_path = ?')
+    .bind(parentPath)
+    .all();
+  const lower = String(name).toLowerCase();
+  for (const r of dirsRes.results) {
+    if (r.path === excludePath) continue;
+    if (basename(r.path).toLowerCase() === lower) {
+      return { kind: 'dir', path: r.path, name: basename(r.path) };
+    }
+  }
+  return null;
+}
+
+// 回收站中的目录仍占用原 path，替换无法落位，只能保留两者或跳过
+const DIR_NO_OVERWRITE = '文件夹同名冲突不支持替换，请选择保留两者或跳过';
+
+// Windows 的「保留两者」命名：report.pdf → report (1).pdf
+export function buildCandidate(name, n) {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return `${name} (${n})`;
+  return `${name.slice(0, dot)} (${n})${name.slice(dot)}`;
+}
+
+export async function uniqueName(env, parentPath, name, exclude) {
+  if (!(await findNameClash(env, parentPath, name, exclude))) return name;
+  for (let i = 1; i <= 999; i++) {
+    const candidate = buildCandidate(name, i);
+    if (!(await findNameClash(env, parentPath, candidate, exclude))) return candidate;
+  }
+  return `${name} (${Date.now()})`;
+}
+
+// 冲突时返回给上层统一结构，前端据此弹出 替换/跳过/保留两者
+export function conflictResult(name, targetDir, clash) {
+  return {
+    ok: false,
+    conflict: true,
+    name,
+    targetDir,
+    clashKind: clash.kind,
+    clashName: clash.name,
+    clashId: clash.id || null,
+    clashPath: clash.path || null,
+    error: `此位置已包含名为“${clash.name}”的${clash.kind === 'dir' ? '文件夹' : '文件'}`,
+  };
+}
+
+// 把 oldPath 整棵子树搬到 newPath（父目录改为 newParent），前缀用 substr 精确剥离
+async function relocateDir(env, oldPath, newPath, newParent) {
+  const L = oldPath.length + 1;
+  const start = oldPath + '/';
+  const end = oldPath + '0';
+
+  await env.DB.batch([
+    env.DB.prepare('UPDATE dirs SET path = ?, parent_path = ? WHERE path = ?')
+      .bind(newPath, newParent, oldPath),
+    env.DB.prepare(
+      'UPDATE dirs SET path = ? || substr(path, ?), parent_path = ? || substr(parent_path, ?) WHERE path >= ? AND path < ?'
+    ).bind(newPath, L, newPath, L, start, end),
+    env.DB.prepare(
+      'UPDATE files SET path = ? || substr(path, ?) WHERE path = ? OR (path >= ? AND path < ?)'
+    ).bind(newPath, L, oldPath, start, end),
+  ]);
+}
+
+// 目标路径下若已存在任何目录行（含回收站），改名/搬入会撞主键
+async function isPathSubtreeBusy(env, path) {
+  const row = await env.DB.prepare('SELECT path FROM dirs WHERE path = ? OR (path >= ? AND path < ?)')
+    .bind(path, path + '/', path + '0')
+    .first();
+  return !!row;
+}
+
+// ---------- 重命名 ----------
+export async function renameItem(env, type, source, newName) {
+  if (type === 'file') {
+    const row = await env.DB.prepare('SELECT name, path FROM files WHERE id = ? AND is_deleted = 0')
+      .bind(source)
+      .first();
+    if (!row) return { ok: false, error: '文件不存在或已删除' };
+    if (row.name === newName) return { ok: false, error: '名称未改变' };
+
+    const clash = await findNameClash(env, row.path, newName, { id: source });
+    if (clash) return conflictResult(newName, row.path, clash);
+
+    await env.DB.prepare('UPDATE files SET name = ? WHERE id = ?').bind(newName, source).run();
+    return { ok: true, name: newName, path: row.path };
+  }
+
+  if (type === 'dir') {
+    const oldPath = source;
+    if (!oldPath) return { ok: false, error: '不能重命名根目录' };
+    if (!(await dirExists(env, oldPath))) return { ok: false, error: '目录不存在或已删除' };
+
+    const parent = parentOf(oldPath) || '';
+    if (basename(oldPath) === newName) return { ok: false, error: '名称未改变' };
+
+    const clash = await findNameClash(env, parent, newName, { path: oldPath });
+    if (clash) return conflictResult(newName, parent, clash);
+
+    const newPath = joinPath(parent, newName);
+    if (await isPathSubtreeBusy(env, newPath)) {
+      return { ok: false, error: '该名称已被占用（可能位于回收站）' };
+    }
+
+    await relocateDir(env, oldPath, newPath, parent);
+    return { ok: true, path: newPath, oldPath };
+  }
+
+  return { ok: false, error: '未知类型' };
+}
+
 // ---------- 移动 ----------
-export async function moveItem(env, type, source, targetDir) {
+// opts: { onConflict: 'overwrite' | 'skip' | 'rename'，缺省时冲突直接返回 }
+//       { trashDate: 覆盖时被替换项的回收站归档日期 }
+export async function moveItem(env, type, source, targetDir, opts = {}) {
+  const onConflict = opts.onConflict;
+
   if (type === 'file') {
     const row = await env.DB.prepare(
       'SELECT id, name, path FROM files WHERE id = ? AND is_deleted = 0'
@@ -375,22 +508,31 @@ export async function moveItem(env, type, source, targetDir) {
 
     if (row.path === targetDir) return { ok: false, error: '文件已在该目录下，无需移动' };
 
-    const conflict = await env.DB.prepare(
-      'SELECT id FROM files WHERE path = ? AND name = ? AND is_deleted = 0 AND id != ?'
-    )
-      .bind(targetDir, row.name, source)
-      .first();
-    if (conflict) return { ok: false, error: '目标目录下已有同名文件' };
+    const clash = await findNameClash(env, targetDir, row.name, { id: source });
+    if (clash) {
+      if (!onConflict) return conflictResult(row.name, targetDir, clash);
+      if (onConflict === 'skip') return { ok: true, skipped: true };
+      if (onConflict === 'overwrite') {
+        if (clash.kind === 'dir') return { ok: false, error: '同名项是文件夹，请改用保留两者或跳过' };
+        if (!opts.trashDate) return { ok: false, error: '缺少回收站日期' };
+        await softDeleteFile(env, clash.id, opts.trashDate);
+      }
+    }
 
-    await env.DB.prepare('UPDATE files SET path = ? WHERE id = ?')
-      .bind(targetDir, source)
+    const finalName = onConflict === 'rename'
+      ? await uniqueName(env, targetDir, row.name, { id: source })
+      : row.name;
+
+    await env.DB.prepare('UPDATE files SET path = ?, name = ? WHERE id = ?')
+      .bind(targetDir, finalName, source)
       .run();
-    return { ok: true };
+    return { ok: true, name: finalName };
   }
 
   if (type === 'dir') {
     const oldPath = source;
     if (!oldPath) return { ok: false, error: '不能移动根目录' };
+    if (!(await dirExists(env, oldPath))) return { ok: false, error: '目录不存在或已删除' };
 
     // 防止移入自身或其子目录
     if (targetDir === oldPath || targetDir.startsWith(oldPath + '/')) {
@@ -398,79 +540,97 @@ export async function moveItem(env, type, source, targetDir) {
     }
 
     const folderName = basename(oldPath);
-    const newPath = joinPath(targetDir, folderName);
+    let newPath = joinPath(targetDir, folderName);
 
     if (newPath === oldPath) return { ok: false, error: '目录已在该位置，无需移动' };
 
-    // 目标子树内任何已存在的目录行（含回收站中的）都会引发主键冲突
-    const clash = await env.DB.prepare(
-      'SELECT path FROM dirs WHERE path = ? OR (path >= ? AND path < ?)'
-    )
-      .bind(newPath, newPath + '/', newPath + '0')
-      .first();
-    if (clash) return { ok: false, error: '目标路径已被占用（可能存在于回收站中）' };
+    // 目录不做「替换」：回收站里的同名目录仍占用原路径，无法安全落位
+    const clash = await findNameClash(env, targetDir, folderName, { path: oldPath });
+    if (clash) {
+      if (!onConflict) return conflictResult(folderName, targetDir, clash);
+      if (onConflict === 'skip') return { ok: true, skipped: true };
+      if (onConflict === 'overwrite') return { ok: false, error: DIR_NO_OVERWRITE };
+      newPath = joinPath(targetDir, await uniqueName(env, targetDir, folderName, { path: oldPath }));
+    }
 
-    // 用 substr 精确剥离旧前缀，避免 replace 的子串污染
-    // L = 旧目录路径长度 + 1，用于 substr 跳过 "oldPath" 本身
-    const L = oldPath.length + 1;
-    const start = oldPath + '/';
-    const end = oldPath + '0';
+    if (await isPathSubtreeBusy(env, newPath)) {
+      return { ok: false, error: '目标路径已被占用（可能存在于回收站中）' };
+    }
 
-    await env.DB.batch([
-      // 目录自身：path 改为新路径，parent_path 改为目标目录
-      env.DB.prepare('UPDATE dirs SET path = ?, parent_path = ? WHERE path = ?')
-        .bind(newPath, targetDir, oldPath),
-      // 子孙目录：path 和 parent_path 同步前缀替换
-      env.DB.prepare(
-        'UPDATE dirs SET path = ? || substr(path, ?), parent_path = ? || substr(parent_path, ?) WHERE path >= ? AND path < ?'
-      ).bind(newPath, L, newPath, L, start, end),
-      // 文件（含直属文件 path = oldPath 和子孙文件）：只改 path
-      env.DB.prepare(
-        'UPDATE files SET path = ? || substr(path, ?) WHERE path = ? OR (path >= ? AND path < ?)'
-      ).bind(newPath, L, oldPath, start, end),
-    ]);
-
-    return { ok: true };
+    await relocateDir(env, oldPath, newPath, targetDir);
+    return { ok: true, path: newPath };
   }
 
   return { ok: false, error: '未知类型' };
 }
 
 // ---------- 复制 ----------
-export async function copyItem(env, type, source, targetDir) {
+// 复制时不排除源自身：把 a.txt 粘贴到它所在的目录同样算同名冲突，
+// 与 Windows 一致，交给冲突对话框决定。
+export async function copyItem(env, type, source, targetDir, opts = {}) {
+  const onConflict = opts.onConflict;
+
   if (type === 'file') {
     const meta = await getFileMeta(env, source);
     if (!meta || meta.isDeleted) return { ok: false, error: '找不到源文件' };
+
+    const clash = await findNameClash(env, targetDir, meta.name);
+    if (clash) {
+      if (!onConflict) return conflictResult(meta.name, targetDir, clash);
+      if (onConflict === 'skip') return { ok: true, skipped: true };
+      if (onConflict === 'overwrite') {
+        // 粘贴回自己所在的目录：覆盖自己没有任何效果
+        if (clash.kind === 'file' && clash.id === source) return { ok: true, skipped: true, newId: source };
+        if (clash.kind === 'dir') return { ok: false, error: '同名项是文件夹，请改用保留两者或跳过' };
+        if (!opts.trashDate) return { ok: false, error: '缺少回收站日期' };
+        await softDeleteFile(env, clash.id, opts.trashDate);
+      }
+    }
+
+    const finalName = onConflict === 'rename'
+      ? await uniqueName(env, targetDir, meta.name)
+      : meta.name;
 
     const newId = await newShortId(env);
     await env.DB.prepare(
       `INSERT INTO files (id, file_id, message_id, name, size, mime, path, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-      .bind(newId, meta.fileId, meta.messageId, meta.name, meta.size, meta.mime, targetDir, Date.now())
+      .bind(newId, meta.fileId, meta.messageId, finalName, meta.size, meta.mime, targetDir, Date.now())
       .run();
-    return { ok: true, newId };
+    return { ok: true, newId, name: finalName };
   }
 
   if (type === 'dir') {
+    if (!(await dirExists(env, source))) return { ok: false, error: '目录不存在或已删除' };
+
     // 防止复制进自身或其子目录
     if (targetDir === source || targetDir.startsWith(source + '/')) {
       return { ok: false, error: '不能复制到自身或其子目录中' };
     }
 
-    const firstNewPath = joinPath(targetDir, basename(source));
-    // 目标已存在同名目录（含回收站中的）会导致复制结果不可见，直接拒绝
-    const clash = await env.DB.prepare('SELECT path FROM dirs WHERE path = ?')
-      .bind(firstNewPath)
-      .first();
-    if (clash) return { ok: false, error: '目标目录下已有同名文件夹' };
+    const folderName = basename(source);
+    let newPath = joinPath(targetDir, folderName);
 
-    const stack = [{ oldPath: source, newParent: targetDir }];
+    // 同移动：回收站中的同名目录仍占用路径，替换无法安全落位
+    const clash = await findNameClash(env, targetDir, folderName);
+    if (clash) {
+      if (!onConflict) return conflictResult(folderName, targetDir, clash);
+      if (onConflict === 'skip') return { ok: true, skipped: true };
+      if (onConflict === 'overwrite') return { ok: false, error: DIR_NO_OVERWRITE };
+      newPath = joinPath(targetDir, await uniqueName(env, targetDir, folderName));
+    }
+
+    // 子树内残留的目录行（含回收站）会让复制结果不可见
+    if (await isPathSubtreeBusy(env, newPath)) {
+      return { ok: false, error: '目标路径已被占用（可能存在于回收站中）' };
+    }
+
+    const stack = [{ oldPath: source, destPath: newPath }];
     while (stack.length) {
-      const { oldPath, newParent } = stack.pop();
-      const newPath = joinPath(newParent, basename(oldPath));
+      const { oldPath, destPath } = stack.pop();
 
-      await addDir(env, newPath);
+      await addDir(env, destPath);
 
       const files = await env.DB.prepare(
         'SELECT * FROM files WHERE path = ? AND is_deleted = 0'
@@ -484,7 +644,7 @@ export async function copyItem(env, type, source, targetDir) {
           `INSERT INTO files (id, file_id, message_id, name, size, mime, path, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
-          .bind(newId, f.file_id, f.message_id, f.name, f.size, f.mime, newPath, Date.now())
+          .bind(newId, f.file_id, f.message_id, f.name, f.size, f.mime, destPath, Date.now())
           .run();
       }
 
@@ -494,10 +654,10 @@ export async function copyItem(env, type, source, targetDir) {
         .bind(oldPath)
         .all();
       for (const d of subDirs.results) {
-        stack.push({ oldPath: d.path, newParent: newPath });
+        stack.push({ oldPath: d.path, destPath: joinPath(destPath, basename(d.path)) });
       }
     }
-    return { ok: true };
+    return { ok: true, path: newPath };
   }
 
   return { ok: false, error: '未知类型' };
