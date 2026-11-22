@@ -24,6 +24,14 @@
   var currentPath = '';
   try { currentPath = decodeURIComponent(rawPath); } catch (e) { currentPath = rawPath; }
 
+  // 逐段编码，地址栏里保留真实层级，避免出现 docs%2Fsub 这种整串编码的写法
+  function encodePath(p) {
+    if (!p) return '';
+    var segs = p.split('/');
+    for (var i = 0; i < segs.length; i++) segs[i] = encodeURIComponent(segs[i]);
+    return segs.join('/');
+  }
+
   var isTrashView = false;
   var items = [];          // 当前列表数据
   var selected = new Map();// key -> item
@@ -181,10 +189,21 @@
       sep.textContent = '›';
       $breadcrumb.appendChild(sep);
       var a = document.createElement('a');
-      a.href = '/' + encodeURIComponent(acc);
+      a.href = '/' + encodePath(acc);
       a.textContent = seg;
       $breadcrumb.appendChild(a);
     });
+  }
+
+  // 只切换选中/焦点样式，不重建行节点。
+  // dblclick 要求两次 click 落在同一个元素上，单击后重建 DOM 会让双击永远不触发。
+  function syncRowClasses() {
+    var rows = $list.querySelectorAll('.row');
+    for (var i = 0; i < rows.length; i++) {
+      var k = rows[i].dataset.key;
+      rows[i].classList.toggle('selected', selected.has(k));
+      rows[i].classList.toggle('focused', k === focusedKey);
+    }
   }
 
   function renderList() {
@@ -250,7 +269,7 @@
         if (it.type === 'dir') {
           nameEl = document.createElement('a');
           nameEl.className = 'name';
-          nameEl.href = '/' + encodeURIComponent(it.path);
+          nameEl.href = '/' + encodePath(it.path);
           nameEl.textContent = it.name + '/';
         } else {
           nameEl = document.createElement('a');
@@ -297,7 +316,7 @@
       // 点击空白区：清空选择
       clearSelection();
       focusedKey = null;
-      renderList();
+      syncRowClasses();
       return;
     }
     var key = row.dataset.key;
@@ -312,7 +331,7 @@
     } else {
       selectOne(key, false);
     }
-    renderList();
+    syncRowClasses();
   });
 
   $list.addEventListener('dblclick', function (e) {
@@ -353,14 +372,14 @@
       if (!selected.has(key)) {
         // 未选中：先选中它
         selectOne(key, false);
-        renderList();
+        syncRowClasses();
       }
       openItemContextMenu(e.clientX, e.clientY);
     } else {
       // 右键空白区
       clearSelection();
       focusedKey = null;
-      renderList();
+      syncRowClasses();
       openBlankContextMenu(e.clientX, e.clientY);
     }
   });
@@ -1128,11 +1147,11 @@
     } else if (e.key === 'Escape') {
       clearSelection();
       focusedKey = null;
-      renderList();
+      syncRowClasses();
     } else if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
       e.preventDefault();
       selectAll();
-      renderList();
+      syncRowClasses();
     } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();
       navigateFocus(e.key === 'ArrowDown' ? 1 : -1, e.shiftKey);
@@ -1164,7 +1183,7 @@
       selected.set(key, items[newIdx]);
       anchorKey = key;
     }
-    renderList();
+    syncRowClasses();
     // 滚动到可视区域
     var row = $list.querySelector('.row[data-key="' + CSS.escape(key) + '"]');
     if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
@@ -1188,7 +1207,7 @@
   }
 
   function history_pushState(path) {
-    var url = path ? '/' + encodeURIComponent(path) : '/';
+    var url = path ? '/' + encodePath(path) : '/';
     try { window.history.pushState(null, '', url); } catch (e) {}
   }
 

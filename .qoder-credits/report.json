@@ -1,6 +1,6 @@
 {
   "schemaVersion": 3.2,
-  "generatedAt": "2026-11-22T02:46:56.135Z",
+  "generatedAt": "2026-11-22T03:05:33.297Z",
   "source": "desktop-rich",
   "usageSource": null,
   "availability": {
@@ -31,11 +31,11 @@
     "model": "auto",
     "modelSource": "runtime-config",
     "cwd": "D:\\OneDrive\\Github\\file-go",
-    "turns": 17,
+    "turns": 20,
     "roundTrips": 0,
-    "compactions": 3,
+    "compactions": 4,
     "startedAt": "2026-11-20T17:58:49.525Z",
-    "endedAt": "2026-11-22T02:46:55.757Z"
+    "endedAt": "2026-11-22T03:05:32.936Z"
   },
   "context": {
     "contextWindow": 200000,
@@ -56,9 +56,9 @@
     "netUserRatio": 0,
     "netUserAdvice": null,
     "netWindowRatio": 0,
-    "observedAutoCompactions": 2,
-    "observedAutoTriggerTokens": 168200,
-    "autoTriggerRatio": 0.841,
+    "observedAutoCompactions": 3,
+    "observedAutoTriggerTokens": 167988,
+    "autoTriggerRatio": 0.83994,
     "thresholdNotEnforced": false
   },
   "totals": {
@@ -74,8 +74,8 @@
     "cachedTokens": 0,
     "cachedTrips": 0,
     "cachedShare": 0,
-    "toolCalls": 590,
-    "fileReads": 269
+    "toolCalls": 670,
+    "fileReads": 285
   },
   "creditsCoverage": {
     "trips": 0,
@@ -85,7 +85,7 @@
     "full": false
   },
   "compactionCost": {
-    "count": 3,
+    "count": 4,
     "items": [
       {
         "index": 1,
@@ -128,11 +128,25 @@
         "proxy": null,
         "effectiveInputTokens": 167988,
         "effectiveOutputTokens": 5102
+      },
+      {
+        "index": 4,
+        "at": "2026-11-22T03:00:51.092Z",
+        "trigger": "auto",
+        "preTokens": 167389,
+        "postTokens": 5573,
+        "messagesSummarized": 707,
+        "nextRequestIndex": null,
+        "nextInputTokens": null,
+        "savedTokens": null,
+        "proxy": null,
+        "effectiveInputTokens": 167389,
+        "effectiveOutputTokens": 5573
       }
     ],
     "totals": {
-      "preTokens": 531311,
-      "postTokens": 20233,
+      "preTokens": 698700,
+      "postTokens": 25806,
       "savedTokens": 0,
       "measured": 0
     }
@@ -169,21 +183,21 @@
     {
       "tool": "Bash",
       "tokens": 0,
-      "calls": 161,
+      "calls": 181,
       "perCall": 0,
       "share": 0
     },
     {
       "tool": "Read",
       "tokens": 0,
-      "calls": 68,
+      "calls": 73,
       "perCall": 0,
       "share": 0
     },
     {
       "tool": "Edit",
       "tokens": 0,
-      "calls": 172,
+      "calls": 177,
       "perCall": 0,
       "share": 0
     },
@@ -197,21 +211,21 @@
     {
       "tool": "Grep",
       "tokens": 0,
-      "calls": 17,
+      "calls": 23,
       "perCall": 0,
       "share": 0
     },
     {
       "tool": "mcp_get",
       "tokens": 0,
-      "calls": 7,
+      "calls": 8,
       "perCall": 0,
       "share": 0
     },
     {
       "tool": "mcp_call",
       "tokens": 0,
-      "calls": 127,
+      "calls": 170,
       "perCall": 0,
       "share": 0
     },
@@ -250,8 +264,8 @@
       "label": "src/page.js",
       "kind": "read",
       "tool": "Read",
-      "selfTokens": 87436,
-      "reads": 147,
+      "selfTokens": 90752,
+      "reads": 161,
       "trips": 0,
       "billed": 0,
       "perRead": 0,
@@ -322,8 +336,8 @@
       "label": "src/index.js",
       "kind": "read",
       "tool": "Read",
-      "selfTokens": 5226,
-      "reads": 10,
+      "selfTokens": 6015,
+      "reads": 11,
       "trips": 0,
       "billed": 0,
       "perRead": 0,
@@ -492,6 +506,18 @@
       "tool": "Read",
       "selfTokens": 192,
       "reads": 2,
+      "trips": 0,
+      "billed": 0,
+      "perRead": 0,
+      "share": 0
+    },
+    {
+      "attr": "file:D:/OneDrive/Github/file-go/src/page.js",
+      "label": "src/page.js",
+      "kind": "search",
+      "tool": "Grep",
+      "selfTokens": 365,
+      "reads": 1,
       "trips": 0,
       "billed": 0,
       "perRead": 0,
