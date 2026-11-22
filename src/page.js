@@ -45,10 +45,6 @@ export function renderPage() {
     content: ''; position: absolute; inset: 1px; border: 1px dotted #999;
     border-radius: 2px; pointer-events: none;
   }
-  .chk {
-    flex-shrink: 0; width: 16px; height: 16px; margin-right: 8px;
-    accent-color: #333; cursor: pointer;
-  }
   .ico { flex-shrink: 0; width: 18px; margin-right: 8px; color: #888; display: inline-flex; align-items: center; }
   .name {
     flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -431,18 +427,6 @@ export function renderPage() {
       if (selected.has(key)) row.classList.add('selected');
       if (focusedKey === key) row.classList.add('focused');
 
-      // 复选框
-      var chk = document.createElement('input');
-      chk.type = 'checkbox';
-      chk.className = 'chk';
-      chk.checked = selected.has(key);
-      chk.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var k = this.closest('.row').dataset.key;
-        selectOne(k, true);
-        renderList();
-      });
-
       // 图标
       var ico = document.createElement('span');
       ico.className = 'ico';
@@ -465,7 +449,6 @@ export function renderPage() {
         }, 0);
         input.addEventListener('keydown', handleRenameKeydown);
         input.addEventListener('blur', handleRenameBlur);
-        row.appendChild(chk);
         row.appendChild(ico);
         row.appendChild(input);
       } else {
@@ -483,7 +466,6 @@ export function renderPage() {
           nameEl.rel = 'noopener';
           nameEl.textContent = it.name;
         }
-        row.appendChild(chk);
         row.appendChild(ico);
         row.appendChild(nameEl);
       }
@@ -525,8 +507,6 @@ export function renderPage() {
       return;
     }
     var key = row.dataset.key;
-    var isCheckbox = e.target.classList.contains('chk');
-    if (isCheckbox) return; // checkbox 自己处理
 
     // 单击只做选择，进入目录/打开文件交给双击与 Enter，否则 <a> 的默认跳转会把整页刷掉
     if (e.target.tagName === 'A') e.preventDefault();

@@ -221,18 +221,6 @@
       if (selected.has(key)) row.classList.add('selected');
       if (focusedKey === key) row.classList.add('focused');
 
-      // 复选框
-      var chk = document.createElement('input');
-      chk.type = 'checkbox';
-      chk.className = 'chk';
-      chk.checked = selected.has(key);
-      chk.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var k = this.closest('.row').dataset.key;
-        selectOne(k, true);
-        renderList();
-      });
-
       // 图标
       var ico = document.createElement('span');
       ico.className = 'ico';
@@ -255,7 +243,6 @@
         }, 0);
         input.addEventListener('keydown', handleRenameKeydown);
         input.addEventListener('blur', handleRenameBlur);
-        row.appendChild(chk);
         row.appendChild(ico);
         row.appendChild(input);
       } else {
@@ -273,7 +260,6 @@
           nameEl.rel = 'noopener';
           nameEl.textContent = it.name;
         }
-        row.appendChild(chk);
         row.appendChild(ico);
         row.appendChild(nameEl);
       }
@@ -315,8 +301,6 @@
       return;
     }
     var key = row.dataset.key;
-    var isCheckbox = e.target.classList.contains('chk');
-    if (isCheckbox) return; // checkbox 自己处理
 
     // 单击只做选择，进入目录/打开文件交给双击与 Enter，否则 <a> 的默认跳转会把整页刷掉
     if (e.target.tagName === 'A') e.preventDefault();
