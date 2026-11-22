@@ -1,6 +1,9 @@
-import { MAX_SIZE, guessMime, json, normalizePath, sanitizeName } from './utils.js';
-import { uploadFileToChannel } from './telegram.js';
-import { newShortId, saveFile, dirExists, findNameClash, uniqueName, getUploadRecord } from './kv.js';
+import { MAX_SIZE, guessMime, json, normalizePath, sanitizeName } from '../utils.js';
+import { uploadFileToChannel } from '../telegram.js';
+import { newShortId } from '../db/ids.js';
+import { saveFile, getUploadRecord } from '../db/files.js';
+import { dirExists } from '../db/dirs.js';
+import { findNameClash, uniqueName } from '../db/naming.js';
 
 // 处理网页上传
 export async function handleUpload(request, env) {

@@ -1,41 +1,10 @@
-import { DatabaseSync } from 'node:sqlite';
-import * as kv from './src/kv.js';
-import { sanitizeName, nameError } from './src/utils.js';
+import * as kv from './helpers/db.mjs';
+import { sanitizeName, nameError } from '../src/utils.js';
+import { fakeEnv } from './helpers/fake-d1.mjs';
+import { createAssert } from './helpers/assert.mjs';
 
-// 用 node:sqlite 模拟 D1 的 prepare/bind/run/first/all/batch 接口
-const db = new DatabaseSync(':memory:');
-const env = {
-  DB: {
-    prepare(sql) {
-      let args = [];
-      return {
-        bind(...a) { args = a; return this; },
-        async run() { const r = db.prepare(sql).run(...args); return { meta: { changes: r.changes } }; },
-        async first() { return db.prepare(sql).get(...args) ?? null; },
-        async all() { return { results: db.prepare(sql).all(...args) }; },
-        async _auto() {
-          return /^\s*SELECT/i.test(sql) ? this.all() : this.run();
-        },
-      };
-    },
-    async batch(stmts) {
-      const out = [];
-      for (const s of stmts) out.push(await s._auto());
-      return out;
-    },
-  },
-};
-
-let pass = 0, fail = 0;
-function ok(cond, label) {
-  if (cond) pass++;
-  else { fail++; console.error('FAIL:', label); }
-}
-function eq(actual, expected, label) {
-  const a = JSON.stringify(actual), e = JSON.stringify(expected);
-  if (a === e) pass++;
-  else { fail++; console.error(`FAIL: ${label}\n  actual   ${a}\n  expected ${e}`); }
-}
+const { env } = fakeEnv();
+const { ok, eq, done } = createAssert();
 
 await kv.initSchema(env);
 
@@ -241,5 +210,4 @@ eq(rootFiles.length, 1, '根目录文件数正确');
 const srcFiles = (await kv.listDir(env, 'tree_src')).files;
 eq(srcFiles.length, 1, '源目录文件数不变');
 
-console.log(`\npass=${pass} fail=${fail}`);
-process.exit(fail ? 1 : 0);
+done();

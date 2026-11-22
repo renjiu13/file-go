@@ -1,6 +1,9 @@
-import { MAX_SIZE, guessMime, normalizePath } from './utils.js';
-import { sendText, copyFileIdToChannel } from './telegram.js';
-import { newShortId, saveFile, checkIdempotent, ensureDir } from './kv.js';
+import { MAX_SIZE, guessMime, normalizePath } from '../utils.js';
+import { sendText, copyFileIdToChannel } from '../telegram.js';
+import { newShortId } from '../db/ids.js';
+import { saveFile } from '../db/files.js';
+import { checkIdempotent } from '../db/idem.js';
+import { ensureDir } from '../db/dirs.js';
 
 // 从消息中提取媒体信息，统一结构
 function pickMedia(msg) {

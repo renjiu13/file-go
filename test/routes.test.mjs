@@ -1,42 +1,13 @@
-import { DatabaseSync } from 'node:sqlite';
-import worker from './src/index.js';
-import * as kv from './src/kv.js';
+import worker from '../src/index.js';
+import * as kv from './helpers/db.mjs';
+import { fakeEnv } from './helpers/fake-d1.mjs';
+import { createAssert } from './helpers/assert.mjs';
+
+const { eq, done } = createAssert();
 
 // 用 node:sqlite 模拟 D1，通过 worker.fetch 覆盖路由层：
-// kv.js 的单元测试看不到 index.js 是否把 onConflict / targetDir 透传下去，这里补上。
-function makeEnv() {
-  const db = new DatabaseSync(':memory:');
-  return {
-    DB: {
-      prepare(sql) {
-        let args = [];
-        return {
-          bind(...a) { args = a; return this; },
-          async run() { const r = db.prepare(sql).run(...args); return { meta: { changes: r.changes } }; },
-          async first() { return db.prepare(sql).get(...args) ?? null; },
-          async all() { return { results: db.prepare(sql).all(...args) }; },
-          async _auto() { return /^\s*SELECT/i.test(sql) ? this.all() : this.run(); },
-        };
-      },
-      async batch(stmts) {
-        const out = [];
-        for (const s of stmts) out.push(await s._auto());
-        return out;
-      },
-    },
-    BOT_TOKEN: 'test-token',
-    CHAT_ID: '-100test',
-  };
-}
-
-let pass = 0, fail = 0;
-function eq(actual, expected, label) {
-  const a = JSON.stringify(actual), e = JSON.stringify(expected);
-  if (a === e) pass++;
-  else { fail++; console.error(`FAIL: ${label}\n  actual   ${a}\n  expected ${e}`); }
-}
-
-const env = makeEnv();
+// 数据层的单元测试看不到 index.js 是否把 onConflict / targetDir 透传下去，这里补上。
+const { env } = fakeEnv({ BOT_TOKEN: 'test-token', CHAT_ID: '-100test' });
 await kv.initSchema(env);
 
 async function api(path, body) {
@@ -124,5 +95,4 @@ eq([r.status, r.json.success], [200, 1], '批量移动保留两者生效');
 r = await api('/api/batch-copy', { items: [{ type: 'dir', path: 'snapshots' }, { type: 'file', id: 'ghost' }], targetDir: 'docs' });
 eq([r.status, r.json.success, r.json.failed], [200, 1, 1], '批量复制汇报成功与失败');
 
-console.log(`pass=${pass} fail=${fail}`);
-process.exit(fail ? 1 : 0);
+done();

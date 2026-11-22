@@ -1,6 +1,6 @@
-import { getFileMeta } from './kv.js';
-import { getFilePath, fileDownloadUrl } from './telegram.js';
-import { isInlineMime } from './utils.js';
+import { getFileMeta } from '../db/files.js';
+import { getFilePath, fileDownloadUrl } from '../telegram.js';
+import { isInlineMime } from '../utils.js';
 
 // 处理文件下载 / 预览
 export async function handleFile(request, env, id) {

@@ -31,6 +31,53 @@
 - **存储**：Telegram 私有频道 (通过 Bot API)
 - **前端**：原生 HTML + CSS + Vanilla JavaScript
 
+## 📁 项目结构
+
+```text
+src/
+  index.js           路由表：路径 → 处理函数，本身不含业务
+  page/              单页前端，由服务端直接吐出，无构建步骤
+    index.js         HTML 骨架，拼接下面两部分
+    style.js         CSS
+    app.js           内联交互脚本（模板字符串，反斜杠要写两层）
+  routes/            HTTP 接口层，只做参数校验与结果封装
+    common.js        请求体解析、回收站归档日期、冲突策略透传
+    list.js          /api/list、/api/tree
+    items.js         /api/mkdir、/api/delete、/api/rename、/api/move、/api/copy
+    trash.js         /api/trash、/api/restore
+    batch.js         四个 /api/batch-* 批量接口
+    upload.js        /api/upload 网页上传
+    webhook.js       /webhook Telegram 机器人入库
+    file.js          /file/:id 流式下载与 Range 预览
+  db/                D1 数据层，唯一写 SQL 的地方
+    schema.js        建表与旧库字段兼容
+    ids.js           短 ID 生成
+    files.js         files 表读写与上传幂等账本
+    dirs.js          dirs 表、目录列表、整棵子树搬迁
+    naming.js        同名冲突检测与「保留两者」命名
+    trash.js         软删除、回收站列表、恢复
+    relocate.js      重命名 / 移动 / 复制
+    batch.js         批量操作的逐项执行与汇总
+    idem.js          Telegram update_id 去重
+  telegram.js        Bot API 调用
+  utils.js           常量与路径 / 命名 / MIME 工具
+test/                断言脚本，node 直接跑，不依赖测试框架
+  helpers/           假 D1（node:sqlite）、断言计数、数据层命名空间
+scripts/
+  dev-harness.mjs    本地夹具：假 D1 + 假 Telegram，把 Worker 跑在 127.0.0.1:8791
+  check-inline.mjs   编译 page/app.js 吐出的内联脚本，兜住模板串转义错误
+```
+
+## 🧪 本地开发与测试
+
+```bash
+npm test          # 数据层 + Windows 语义 + 上传幂等 + 路由透传，共 201 条断言
+npm run check     # 编译页面内联脚本；反斜杠少写一层会让整页 JS 静默报废，靠这步拦住
+npm run harness   # 起本地夹具，浏览器打开 http://127.0.0.1:8791
+npm run dev       # wrangler dev（需要 .dev.vars 提供 BOT_TOKEN）
+npm run deploy    # 上线
+```
+
 ## 🚀 快速部署指南
 
 ### 1. 准备工作
@@ -77,7 +124,7 @@ https://api.telegram.org/bot<你的BOT_TOKEN>/setWebhook?url=<你的Worker链接
 
 - **文件大小限制**：受限于 Telegram Bot API 的 `getFile` 方法，**下载**大小严格限制在 **20MB** 以内。网页上传也已强制限制为 20MB。
 - **文件夹同名不支持替换**：被删除的目录仍占用 `dirs` 表的路径主键，服务端无法安全合并两个同名目录，因此目录的同名冲突只提供“保留两者”和“跳过”，弹窗里的“替换”会置灰。
-- **回收站走独立接口**：回收站视图读 `/api/trash`（按删除日期分组），普通目录列表读 `/api/list`，两者互不混用。被删目录里的孙级条目要先恢复父目录才看得见。`/api/list` 目前仍会附带查询软删除条目（`deleted` 字段），前端已不再使用，想去掉可以删掉 `kv.js` 里 `listDir` 的这两条查询。
+- **回收站走独立接口**：回收站视图读 `/api/trash`（按删除日期分组），普通目录列表读 `/api/list`，两者互不混用。被删目录里的孙级条目要先恢复父目录才看得见。`/api/list` 不再附带软删除条目，回收站数据只从 `/api/trash` 取。
 - **孤儿文件**：由于网络波动，可能出现 Telegram 文件上传成功但 D1 数据库写入失败的情况。目前属于小概率事件，后续可加入定时清理任务或幂等重试机制。
 - **Cloudflare 额度**：D1 免费版每日 500 万行读取、10 万行写入，对于个人或小团队分享完全够用。
 

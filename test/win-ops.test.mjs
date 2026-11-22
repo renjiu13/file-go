@@ -1,44 +1,12 @@
-import { DatabaseSync } from 'node:sqlite';
-import * as kv from './src/kv.js';
-import { isValidName, nameError, sanitizeName } from './src/utils.js';
+import * as kv from './helpers/db.mjs';
+import { isValidName, nameError, sanitizeName } from '../src/utils.js';
+import { fakeEnv } from './helpers/fake-d1.mjs';
+import { createAssert } from './helpers/assert.mjs';
 
-// 用 node:sqlite 模拟 D1 的 prepare/bind/run/first/all/batch 接口
-function makeEnv() {
-  const db = new DatabaseSync(':memory:');
-  return {
-    DB: {
-      prepare(sql) {
-        let args = [];
-        return {
-          bind(...a) { args = a; return this; },
-          async run() { const r = db.prepare(sql).run(...args); return { meta: { changes: r.changes } }; },
-          async first() { return db.prepare(sql).get(...args) ?? null; },
-          async all() { return { results: db.prepare(sql).all(...args) }; },
-          async _auto() { return /^\s*SELECT/i.test(sql) ? this.all() : this.run(); },
-        };
-      },
-      async batch(stmts) {
-        const out = [];
-        for (const s of stmts) out.push(await s._auto());
-        return out;
-      },
-    },
-  };
-}
-
-let pass = 0, fail = 0;
-function ok(cond, label) {
-  if (cond) pass++;
-  else { fail++; console.error('FAIL:', label); }
-}
-function eq(actual, expected, label) {
-  const a = JSON.stringify(actual), e = JSON.stringify(expected);
-  if (a === e) pass++;
-  else { fail++; console.error(`FAIL: ${label}\n  actual   ${a}\n  expected ${e}`); }
-}
+const { ok, eq, done } = createAssert();
 
 const TRASH = '20261121';
-const env = makeEnv();
+const { env } = fakeEnv();
 await kv.initSchema(env);
 
 // 目录：docs/docs/sub dst1 d2 d3/d2 p1/p1/x g1/g1/sub ren1 t1 t2
@@ -206,5 +174,4 @@ eq([r.conflict, r.clashKind], [true, 'dir'], '与回收站中的同名目录冲�
 r = await kv.renameItem(env, 'dir', 't2', 't1x');
 ok(r.ok, '换成不冲突的名字可以重命名');
 
-console.log(`pass=${pass} fail=${fail}`);
-process.exit(fail ? 1 : 0);
+done();

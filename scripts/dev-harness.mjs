@@ -1,27 +1,10 @@
 // 临时端到端夹具：node:sqlite 顶住 D1、假 Telegram 顶住 Bot API，把 Worker 跑在本地 http 上
 import http from 'node:http';
-import { DatabaseSync } from 'node:sqlite';
-import * as kv from './src/kv.js';
-import worker from './src/index.js';
+import * as kv from '../test/helpers/db.mjs';
+import worker from '../src/index.js';
+import { fakeEnv } from '../test/helpers/fake-d1.mjs';
 
-const db = new DatabaseSync(':memory:');
-const env = {
-  DB: {
-    prepare(sql) {
-      let args = [];
-      return {
-        bind(...a) { args = a; return this; },
-        async run() { const r = db.prepare(sql).run(...args); return { meta: { changes: r.changes } }; },
-        async first() { return db.prepare(sql).get(...args) ?? null; },
-        async all() { return { results: db.prepare(sql).all(...args) }; },
-        async _auto() { return /^\s*SELECT/i.test(sql) ? this.all() : this.run(); },
-      };
-    },
-    async batch(stmts) { const out = []; for (const s of stmts) out.push(await s._auto()); return out; },
-  },
-  BOT_TOKEN: 'faketoken',
-  CHAT_ID: '-1001234567890',
-};
+const env = fakeEnv({ BOT_TOKEN: 'faketoken', CHAT_ID: '-1001234567890' }).env;
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, init) => {

@@ -1,9 +1,6 @@
 // 文件大小上限：20MB（受 Telegram Bot API getFile 限制）
 export const MAX_SIZE = 20 * 1024 * 1024;
 
-// 公开索引保留的最大条数
-export const INDEX_LIMIT = 200;
-
 // 短 ID 长度
 export const ID_LENGTH = 10;
 

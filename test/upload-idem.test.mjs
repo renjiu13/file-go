@@ -1,30 +1,11 @@
 // 上传幂等：重试不能重复落到 Telegram，也不能让已成功的上传显示成失败
-import { DatabaseSync } from 'node:sqlite';
-import { handleUpload } from './src/upload.js';
-import * as kv from './src/kv.js';
+import { handleUpload } from '../src/routes/upload.js';
+import * as kv from './helpers/db.mjs';
+import { fakeEnv } from './helpers/fake-d1.mjs';
+import { createAssert } from './helpers/assert.mjs';
 
-const db = new DatabaseSync(':memory:');
-const env = {
-  BOT_TOKEN: 'mock', CHAT_ID: 'mock',
-  DB: {
-    prepare(sql) {
-      let args = [];
-      const stmt = () => db.prepare(sql);
-      return {
-        bind(...a) { args = a; return this; },
-        async run() { const r = stmt().run(...args); return { meta: { changes: r.changes } }; },
-        async first() { return stmt().get(...args) ?? null; },
-        async all() { return { results: stmt().all(...args) }; },
-        async _auto() { return /^\s*SELECT/i.test(sql) ? this.all() : this.run(); },
-      };
-    },
-    async batch(stmts) {
-      const out = [];
-      for (const s of stmts) out.push(await s._auto());
-      return out;
-    },
-  },
-};
+const { env, db } = fakeEnv({ BOT_TOKEN: 'mock', CHAT_ID: 'mock' });
+const { eq, done } = createAssert();
 
 let tgCalls = 0;
 globalThis.fetch = async () => {
@@ -33,17 +14,6 @@ globalThis.fetch = async () => {
     ok: true, result: { message_id: tgCalls, document: { file_id: 'fid' + tgCalls } },
   }), { headers: { 'Content-Type': 'application/json' } });
 };
-
-let pass = 0, fail = 0;
-function ok(cond, label) {
-  if (cond) pass++;
-  else { fail++; console.error('FAIL:', label); }
-}
-function eq(actual, expected, label) {
-  const a = JSON.stringify(actual), e = JSON.stringify(expected);
-  if (a === e) pass++;
-  else { fail++; console.error(`FAIL: ${label}\n  actual   ${a}\n  expected ${e}`); }
-}
 
 await kv.initSchema(env);
 await kv.ensureDir(env, 'docs');
@@ -92,5 +62,4 @@ const capped = await handleUpload(req('d.txt', 'docs', longKey), env);
 eq(capped.status, 200, '超长幂等键仍可用');
 eq(db.prepare('SELECT LENGTH(upload_key) n FROM upload_ledger WHERE upload_key = ?').get(longKey.slice(0, 64)).n, 64, '键按 64 字符存储');
 
-console.log(`pass=${pass} fail=${fail}`);
-process.exit(fail ? 1 : 0);
+done();
