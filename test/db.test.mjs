@@ -1,213 +1,235 @@
-import * as kv from './helpers/db.mjs';
-import { sanitizeName, nameError } from '../src/utils.js';
+// nodes/file_parts 数据层的核心行为：命名、移动/复制、回收站、上传会话、旧库迁移。
+// 每个用例块用全新的内存库；initSchema 的缓存由 fakeEnv 重置。
 import { fakeEnv } from './helpers/fake-d1.mjs';
+import * as kv from './helpers/db.mjs';
 import { createAssert } from './helpers/assert.mjs';
 
-const { env } = fakeEnv();
-const { ok, eq, done } = createAssert();
+const t = createAssert();
 
-await kv.initSchema(env);
+async function fresh() {
+  const { env, db } = fakeEnv();
+  await kv.initSchema(env);
+  return { env, db };
+}
 
-// ============================================================
-// 命名规则测试
-// ============================================================
-console.log('--- 命名规则 ---');
-eq(sanitizeName('hello.txt'), 'hello.txt', '正常文件名');
-eq(sanitizeName('my file:name.txt'), 'my file_name.txt', '非法字符替换为下划线');
-eq(sanitizeName('  bad name.  '), 'bad name', '首尾空格和点去除');
-eq(sanitizeName('CON'), '_CON', '保留名加前缀');
-eq(sanitizeName('nul.txt'), '_nul.txt', '保留名加扩展名');
-ok(sanitizeName('a'.repeat(200)).length <= 100, '超长截断');
+const file = (env, name, extra = {}) => kv.insertFileNode(env, Object.assign({
+  parentId: null, name, size: 8, mime: 'text/plain', chunkSize: 4, chunkCount: 2,
+}, extra));
 
-ok(nameError('') !== '', '空名报错');
-ok(nameError('bad/name') !== '', '含斜杠报错');
-ok(nameError('test.') !== '', '结尾点报错');
-ok(nameError(' test') !== '', '开头空格报错');
-ok(nameError('CON') !== '', '保留名报错');
-ok(nameError('hello.txt') === '', '合法名通过');
+// ---- 建表 ----
+{
+  const { env, db } = await fresh();
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map((r) => r.name);
+  for (const name of ['file_parts', 'idem', 'meta', 'nodes', 'pending_deletes']) {
+    t.ok(tables.includes(name), `table ${name}`);
+  }
+  const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().map((r) => r.name);
+  t.ok(idx.includes('nodes_live_name'), 'index nodes_live_name');
+  t.ok(idx.includes('nodes_live_root_name'), 'index nodes_live_root_name');
+  t.eq(tables.includes('files'), false, 'no legacy files table on fresh db');
+}
 
-// ============================================================
-// 重命名 + 冲突
-// ============================================================
-console.log('--- 重命名 ---');
-await kv.addDir(env, 'docs');
-await kv.saveFile(env, { id: 'f_rename_01', fileId: 'fx', name: 'a.txt', size: 1, path: 'docs' });
-await kv.saveFile(env, { id: 'f_rename_02', fileId: 'fy', name: 'b.txt', size: 2, path: 'docs' });
+// ---- 目录与路径 ----
+{
+  const { env } = await fresh();
+  const docs = await kv.createDir(env, null, 'Docs');
+  t.ok(docs.ok, 'mkdir docs');
+  const clash = await kv.createDir(env, null, 'docs');
+  t.ok(clash.conflict && clash.clashId === docs.id, 'root clash is case insensitive');
+  const sub = await kv.createDir(env, docs.id, 'Sub');
+  t.ok(sub.ok, 'mkdir sub');
 
-let r = await kv.renameItem(env, 'file', 'f_rename_01', 'b.txt');
-ok(r.conflict && r.clashName === 'b.txt', '重命名同名冲突返回 conflict');
+  const rootFile = await file(env, 'notes.txt');
+  const rootClash = await kv.createDir(env, null, 'Notes.TXT');
+  t.ok(rootClash.conflict && rootClash.clashId === rootFile.id, 'file and dir share namespace');
 
-// 用 rename 策略（保留两者）
-r = await kv.renameItem(env, 'file', 'f_rename_01', 'b.txt', { onConflict: 'rename' });
-ok(r.ok && r.name === 'b (1).txt', '重命名保留两者自动编号');
+  const resolved = await kv.resolvePath(env, 'DOCS/Sub');
+  t.ok(resolved && resolved.id === sub.id, 'resolve path case insensitive');
+  t.eq(resolved.crumbs.map((c) => c.path), ['Docs', 'Docs/Sub'], 'crumbs paths');
+  t.eq(await kv.resolvePath(env, 'docs/missing'), null, 'missing segment resolves null');
 
-// ============================================================
-// 放入回收站 + 恢复 + 冲突
-// ============================================================
-console.log('--- 回收站 & 恢复 ---');
-await kv.addDir(env, 'trash_test');
-await kv.saveFile(env, { id: 'f_trash_01', fileId: 'f1', name: 'keep.txt', size: 10, path: 'trash_test' });
-await kv.saveFile(env, { id: 'f_trash_02', fileId: 'f2', name: 'gone.txt', size: 20, path: 'trash_test' });
+  const list = await kv.listChildren(env, docs.id);
+  t.eq(list.dirs.map((d) => d.name), ['Sub'], 'list dirs');
+  t.eq(list.files.length, 0, 'list files empty');
 
-// 删除 gone.txt
-r = await kv.softDeleteFile(env, 'f_trash_02', '20261122');
-ok(r.ok, '软删除文件成功');
+  const tree = await kv.getTree(env);
+  t.eq(tree.map((n) => n.path), ['Docs', 'Docs/Sub'], 'tree paths');
+}
 
-// 恢复
-r = await kv.restoreItem(env, 'file', 'f_trash_02');
-ok(r.ok, '恢复文件成功');
-const meta = await kv.getFileMeta(env, 'f_trash_02');
-ok(!meta.isDeleted, '恢复后 is_deleted 为 0');
+// ---- 重命名冲突策略 ----
+{
+  const { env } = await fresh();
+  const a = await file(env, 'a.txt');
+  const b = await file(env, 'b.txt');
+  t.ok((await kv.renameNode(env, a.id, 'a2.txt')).ok, 'rename simple');
 
-// 再删一次，然后在原目录上传同名文件，再恢复时应冲突
-await kv.softDeleteFile(env, 'f_trash_02', '20261123');
-await kv.saveFile(env, { id: 'f_new_01', fileId: 'fn', name: 'gone.txt', size: 30, path: 'trash_test' });
+  const conflict = await kv.renameNode(env, b.id, 'a2.txt');
+  t.ok(conflict.conflict && conflict.clashId === a.id, 'rename conflict reports clash');
+  const skipped = await kv.renameNode(env, b.id, 'a2.txt', 'skip');
+  t.ok(skipped.ok && skipped.skipped && skipped.name === 'b.txt', 'rename skip keeps name');
 
-r = await kv.restoreItem(env, 'file', 'f_trash_02');
-ok(r.conflict && r.clashKind === 'file', '恢复同名冲突返回 conflict');
+  const overwritten = await kv.renameNode(env, b.id, 'a2.txt', 'overwrite');
+  t.ok(overwritten.ok, 'rename overwrite ok');
+  t.ok((await kv.getNode(env, a.id)).deletedAt > 0, 'overwrite moves clash to trash');
 
-// 跳过策略
-r = await kv.restoreItem(env, 'file', 'f_trash_02', { onConflict: 'skip' });
-ok(r.ok && r.skipped, '冲突时跳过策略');
+  // 把 a 从回收站恢复，名字已被占用 → 自动「保留两者」
+  const restored = await kv.restoreNode(env, a.id);
+  t.ok(restored.ok, 'restore after overwrite');
+  t.eq(restored.name, 'a2 (1).txt', 'restore renames on clash');
+  t.eq(await kv.isUniqueError(new Error('UNIQUE constraint failed: nodes.name')), true, 'unique error detection');
+}
 
-// 替换策略（把现有文件移进回收站）
-r = await kv.restoreItem(env, 'file', 'f_trash_02', { onConflict: 'overwrite', trashDate: '20261124' });
-ok(r.ok, '冲突时替换策略成功');
-const old = await kv.getFileMeta(env, 'f_new_01');
-ok(old && old.isDeleted, '被替换的文件移入回收站');
+// ---- 移动 ----
+{
+  const { env } = await fresh();
+  const dir = await kv.createDir(env, null, 'Move');
+  const f = await file(env, 'm.txt');
+  const g = await file(env, 'g.txt');
+  const same = await kv.moveNode(env, f.id, null);
+  t.eq(same.error, '文件已在该目录中', 'move to same parent rejected');
 
-// 保留两者策略：先把恢复的文件再删掉，再放一个同名文件占坑，然后用 rename 策略恢复
-await kv.softDeleteFile(env, 'f_trash_02', '20261125');
-await kv.saveFile(env, { id: 'f_new_02', fileId: 'fn2', name: 'gone.txt', size: 99, path: 'trash_test' });
-r = await kv.restoreItem(env, 'file', 'f_trash_02', { onConflict: 'rename' });
-ok(r.ok && r.name === 'gone (1).txt', '保留两者自动重命名');
+  const moved = await kv.moveNode(env, g.id, dir.id);
+  t.ok(moved.ok && moved.parentId === dir.id, 'move into dir');
+  t.eq((await kv.listChildren(env, dir.id)).files.map((x) => x.name), ['g.txt'], 'move visible in target');
 
-// ============================================================
-// 目录删除 + 回收站列表（子项可见）
-// ============================================================
-console.log('--- 目录删除 & 回收站可见性 ---');
-await kv.addDir(env, 'top');
-await kv.addDir(env, 'top/sub');
-await kv.saveFile(env, { id: 'f_dir_01', fileId: 'fd1', name: 'in-top.txt', size: 5, path: 'top' });
-await kv.saveFile(env, { id: 'f_dir_02', fileId: 'fd2', name: 'in-sub.txt', size: 6, path: 'top/sub' });
+  // 目录成环
+  const a = await kv.createDir(env, null, 'A');
+  const b = await kv.createDir(env, a.id, 'B');
+  const cycle = await kv.moveNode(env, a.id, b.id);
+  t.eq(cycle.error, '不能移动到自身或子文件夹中', 'move into own subtree rejected');
 
-await kv.softDeleteDir(env, 'top', '20261126');
+  // 目标里已有同名文件 → overwrite 把目标送进回收站
+  const dup = await file(env, 'm.txt', { parentId: dir.id });
+  t.ok((await kv.getNode(env, dup.id)).deletedAt == null, 'dup alive before move');
+  const conflict = await kv.moveNode(env, f.id, dir.id, null);
+  t.ok(conflict.conflict, 'move reports conflict');
+  const ov = await kv.moveNode(env, f.id, dir.id, 'overwrite');
+  t.ok(ov.ok && ov.name === 'm.txt', 'move overwrite ok');
+  t.ok((await kv.getNode(env, dup.id)).deletedAt > 0, 'move overwrite trashes clash');
+}
 
-const trash = await kv.getTrashList(env);
-const items26 = trash['20261126'] || [];
-ok(items26.some(i => i.type === 'dir' && i.path === 'top'), '被删目录在回收站可见');
-ok(items26.some(i => i.type === 'dir' && i.path === 'top/sub'), '被删子目录在回收站可见');
-ok(items26.some(i => i.type === 'file' && i.id === 'f_dir_01'), '目录内文件在回收站可见');
-ok(items26.some(i => i.type === 'file' && i.id === 'f_dir_02'), '子目录内文件在回收站可见');
+// ---- 复制：分片引用 ----
+{
+  const { env } = await fresh();
+  const dir = await kv.createDir(env, null, 'Target');
+  const src = await file(env, 'src.bin', { size: 8, chunkSize: 4, chunkCount: 2 });
+  await kv.addPart(env, src.id, 0, 'tg_a', 11, 4, 'a'.repeat(64));
+  await kv.addPart(env, src.id, 1, 'tg_b', 12, 4, 'b'.repeat(64));
 
-// ============================================================
-// 批量放入回收站
-// ============================================================
-console.log('--- 批量操作 ---');
-await kv.addDir(env, 'batch_src');
-await kv.saveFile(env, { id: 'f_b1', fileId: 'fb1', name: 'one.txt', size: 1, path: 'batch_src' });
-await kv.saveFile(env, { id: 'f_b2', fileId: 'fb2', name: 'two.txt', size: 2, path: 'batch_src' });
-await kv.saveFile(env, { id: 'f_b3', fileId: 'fb3', name: 'three.txt', size: 3, path: 'batch_src' });
+  const copy = await kv.copyNode(env, src.id, dir.id);
+  t.ok(copy.ok && copy.id !== src.id, 'copy has new id');
+  const parts = await kv.getParts(env, copy.id);
+  t.eq(parts.map((p) => [p.idx, p.fileId, p.messageId, p.size]), [[0, 'tg_a', null, 4], [1, 'tg_b', null, 4]], 'copy reuses tg ids, drops message ids');
+  t.eq((await kv.getParts(env, src.id)).map((p) => p.messageId), [11, 12], 'source parts untouched');
+  t.eq((await kv.getNode(env, copy.id)).chunkSize, 4, 'copy keeps chunk size');
 
-const batchResult = await kv.batchTrash(env, [
-  { type: 'file', id: 'f_b1' },
-  { type: 'file', id: 'f_b2' },
-  { type: 'file', id: 'nonexistent' },
-], '20261127');
+  const conflict = await kv.copyNode(env, src.id, dir.id);
+  t.ok(conflict.conflict, 'copy conflict reported');
+  const renamed = await kv.copyNode(env, src.id, dir.id, 'keep-both');
+  t.eq(renamed.name, 'src (1).bin', 'copy keep-both name');
+}
 
-eq(batchResult.success, 2, '批量删除成功数');
-eq(batchResult.failed, 1, '批量删除失败数');
-eq(batchResult.skipped, 0, '批量删除跳过数');
+// ---- 目录复制整棵子树 ----
+{
+  const { env } = await fresh();
+  const top = await kv.createDir(env, null, 'Project');
+  const inner = await kv.createDir(env, top.id, 'inner');
+  const f = await file(env, 'f.txt', { parentId: inner.id, size: 4, chunkSize: 4, chunkCount: 1 });
+  await kv.addPart(env, f.id, 0, 'tg_f', 21, 4, 'c'.repeat(64));
+  const dest = await kv.createDir(env, null, 'Dest');
 
-// ============================================================
-// 批量移动（含冲突处理）
-// ============================================================
-await kv.addDir(env, 'move_dest');
-await kv.saveFile(env, { id: 'f_mv_dest', fileId: 'fmd', name: 'a.txt', size: 100, path: 'move_dest' });
+  const copied = await kv.copyNode(env, top.id, dest.id);
+  t.ok(copied.ok && copied.kind === 'dir', 'dir copy ok');
+  const newTop = await kv.getNode(env, copied.id);
+  t.eq((await kv.listChildren(env, dest.id)).dirs.map((d) => d.name), ['Project'], 'dir copy at target');
+  const newInner = (await kv.listChildren(env, copied.id)).dirs[0];
+  t.ok(newInner && newInner.id !== inner.id, 'inner dir got new id');
+  const newFiles = await kv.listChildren(env, newInner.id);
+  t.eq(newFiles.files.map((x) => x.name), ['f.txt'], 'nested file copied');
+  const newParts = await kv.getParts(env, newFiles.files[0].id);
+  t.eq(newParts.map((p) => [p.fileId, p.messageId]), [['tg_f', null]], 'nested parts referenced');
+}
 
-await kv.addDir(env, 'move_src');
-await kv.saveFile(env, { id: 'f_mv_src1', fileId: 'fms1', name: 'a.txt', size: 1, path: 'move_src' });
-await kv.saveFile(env, { id: 'f_mv_src2', fileId: 'fms2', name: 'b.txt', size: 2, path: 'move_src' });
+// ---- 回收站 ----
+{
+  const { env } = await fresh();
+  const d = await kv.createDir(env, null, 'Old');
+  const child = await kv.createDir(env, d.id, 'child');
+  const f = await file(env, 'x.txt', { parentId: child.id, size: 2, chunkSize: 2, chunkCount: 1 });
+  const del = await kv.softDelete(env, d.id);
+  t.ok(del.ok && del.count === 3, 'recursive delete count');
 
-// 缺省策略：遇冲突直接返回 conflict
-const mv1 = await kv.batchMove(env, [
-  { type: 'file', id: 'f_mv_src1' },
-  { type: 'file', id: 'f_mv_src2' },
-], 'move_dest');
-ok(mv1.results.some(r => r.conflict), '批量移动缺省时返回冲突项');
-ok(mv1.results.some(r => r.ok && !r.conflict && r.name === 'b.txt'), '无冲突项移动成功');
+  const groups = await kv.getTrashList(env);
+  t.eq(groups.length, 1, 'one trash group');
+  t.eq(groups[0].items.map((x) => x.id), [d.id], 'only top item listed');
+  t.eq(groups[0].items[0].originalPath, 'Old', 'original path');
+  t.eq((await kv.restoreNode(env, child.id)).error, '请恢复回收站中的顶层项', 'child cannot restore alone');
 
-// 跳过策略
-const mv2 = await kv.batchMove(env, [
-  { type: 'file', id: 'f_mv_src1' },
-], 'move_dest', { onConflict: 'skip' });
-ok(mv2.success === 0 && mv2.skipped === 1, '跳过策略计数正确');
+  t.ok((await kv.restoreNode(env, d.id)).ok, 'restore top');
+  t.eq((await kv.getNode(env, f.id)).deletedAt, null, 'descendants restored');
+  t.eq((await kv.getTrashList(env)).length, 0, 'trash empty after restore');
 
-// 替换策略
-const mv3 = await kv.batchMove(env, [
-  { type: 'file', id: 'f_mv_src1' },
-], 'move_dest', { onConflict: 'overwrite', trashDate: '20261128' });
-eq(mv3.success, 1, '替换策略移动成功');
-const destList = (await kv.listDir(env, 'move_dest')).files;
-eq(destList.find(f => f.name === 'a.txt').size, 1, '替换后目标文件是源文件大小');
+  // 删除后同名新对象占位 → 恢复时自动改名
+  await kv.softDelete(env, d.id);
+  await kv.createDir(env, null, 'Old');
+  const r2 = await kv.restoreNode(env, d.id);
+  t.ok(r2.ok, 'restore with clash');
+  t.eq(r2.name, 'Old (1)', 'restore keep-both name');
+}
 
-// ============================================================
-// 同目录移动被拒绝
-// ============================================================
-await kv.addDir(env, 'same_dir');
-await kv.saveFile(env, { id: 'f_same', fileId: 'fs', name: 'same.txt', size: 9, path: 'same_dir' });
-const same = await kv.moveItem(env, 'file', 'f_same', 'same_dir');
-ok(!same.ok && same.error && same.error.indexOf('无需') >= 0, '同目录移动被拒绝');
+// ---- 上传会话、中断、过期 ----
+{
+  const { env, db } = await fresh();
+  const up = await file(env, 'up.bin', { status: 'uploading', expiresAt: Date.now() + 60000, size: 8, chunkSize: 4, chunkCount: 2 });
+  await kv.addPart(env, up.id, 0, 'tg_0', 501, 4, null);
+  await kv.addPart(env, up.id, 1, 'tg_1', 502, 4, null);
+  const aborted = await kv.abortUpload(env, up.id);
+  t.eq(aborted, 2, 'abort returns part count');
+  t.eq(await kv.getNode(env, up.id), null, 'aborted node deleted');
+  t.eq(await kv.getParts(env, up.id), [], 'aborted parts deleted');
+  t.eq(db.prepare('SELECT message_id FROM pending_deletes ORDER BY message_id').all().map((r) => r.message_id), [501, 502], 'abort queues messages');
 
-const sameDir = await kv.moveItem(env, 'dir', 'same_dir', '');
-ok(!sameDir.ok, '目录移动到原位置被拒绝');
+  const old = await file(env, 'old.bin', { status: 'uploading', expiresAt: Date.now() - 1000, size: 4, chunkSize: 4, chunkCount: 1 });
+  await kv.addPart(env, old.id, 0, 'tg_old', 601, 4, null);
+  await kv.queuePendingDeletes(env, [601, 601]);
+  const cleaned = await kv.expireUploads(env, Date.now());
+  t.eq(cleaned, 1, 'expired upload cleaned');
+  t.eq(await kv.getNode(env, old.id), null, 'expired node gone');
+}
 
-// ============================================================
-// 目录循环防护
-// ============================================================
-await kv.addDir(env, 'parent');
-await kv.addDir(env, 'parent/child');
-const loop1 = await kv.moveItem(env, 'dir', 'parent', 'parent/child');
-ok(!loop1.ok, '不能移入子目录');
-const loop2 = await kv.copyItem(env, 'dir', 'parent', 'parent/child');
-ok(!loop2.ok, '不能复制到子目录');
+// ---- 旧库迁移 ----
+{
+  const { env, db } = fakeEnv();
+  db.exec(`CREATE TABLE files (id TEXT PRIMARY KEY, file_id TEXT, message_id INTEGER, name TEXT, size INTEGER,
+            mime TEXT, path TEXT, created_at INTEGER, is_deleted INTEGER, trash_date TEXT, original_path TEXT)`);
+  db.exec(`CREATE TABLE dirs (path TEXT PRIMARY KEY, parent_path TEXT, created_at INTEGER,
+            is_deleted INTEGER, trash_date TEXT, original_path TEXT)`);
+  db.prepare("INSERT INTO dirs (path, parent_path, created_at) VALUES ('docs','',1), ('docs/sub','docs',2)").run();
+  db.prepare(`INSERT INTO files (id,file_id,name,size,mime,path,created_at,is_deleted) VALUES
+    ('legacy00001','fid1','deep.txt',10,'text/plain','docs/sub',10,0),
+    ('legacy00002','fid2','root.txt',20,'text/plain','',20,0),
+    ('legacy00003','fid3','gone.txt',30,'text/plain','',30,1)`).run();
 
-// ============================================================
-// 复制不影响原文件
-// ============================================================
-await kv.addDir(env, 'copy_src');
-await kv.addDir(env, 'copy_dest');
-await kv.saveFile(env, { id: 'f_copy_orig', fileId: 'fco', name: 'orig.txt', size: 42, path: 'copy_src' });
+  await kv.initSchema(env);
+  const rows = await kv.listChildren(env, null);
+  t.eq(rows.dirs.map((d) => d.name), ['docs'], 'migrated dirs at root');
+  t.eq(rows.files.map((f) => f.name), ['root.txt'], 'migrated live root file');
+  const docsId = (await kv.resolvePath(env, 'docs/sub')).id;
+  const sub = await kv.listChildren(env, docsId);
+  t.eq(sub.files.map((f) => f.name), ['deep.txt'], 'migrated nested file');
+  const node = await kv.getNode(env, 'legacy00001');
+  t.ok(node, 'legacy id preserved');
+  const parts = await kv.getParts(env, 'legacy00001');
+  t.eq(parts.map((p) => [p.idx, p.fileId, p.messageId, p.size, p.sha256]), [[0, 'fid1', null, 10, null]], 'legacy part single chunk');
+  t.eq(node.chunkSize, 10, 'legacy chunk_size = size');
+  t.eq(node.chunkCount, 1, 'legacy chunk_count 1');
 
-const cp = await kv.copyItem(env, 'file', 'f_copy_orig', 'copy_dest');
-ok(cp.ok && cp.newId, '复制成功并返回新ID');
-ok(cp.newId !== 'f_copy_orig', '新ID不等于原ID');
-const orig = await kv.getFileMeta(env, 'f_copy_orig');
-ok(!orig.isDeleted && orig.path === 'copy_src', '原文件不受影响');
+  // 标记已写，再跑一次不会重复插入
+  await kv.initSchema(env);
+  t.eq(db.prepare('SELECT COUNT(*) AS n FROM nodes').get().n, 4, 'migration idempotent');
 
-// ============================================================
-// 目录复制保持结构
-// ============================================================
-await kv.addDir(env, 'tree_src');
-await kv.addDir(env, 'tree_src/deep');
-await kv.saveFile(env, { id: 'f_tree_1', fileId: 'ft1', name: 'root.txt', size: 1, path: 'tree_src' });
-await kv.saveFile(env, { id: 'f_tree_2', fileId: 'ft2', name: 'deep.txt', size: 2, path: 'tree_src/deep' });
+  // 旧回收站里的文件不迁移
+  t.eq(db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE name = 'gone.txt'").get().n, 0, 'deleted legacy file skipped');
+}
 
-const treeCp = await kv.copyItem(env, 'dir', 'tree_src', 'copy_dest');
-ok(treeCp.ok, '目录复制成功');
-
-const deepDir = await kv.dirExists(env, 'copy_dest/tree_src/deep');
-ok(deepDir, '复制后子目录存在');
-
-const deepFiles = (await kv.listDir(env, 'copy_dest/tree_src/deep')).files;
-eq(deepFiles.length, 1, '子目录文件数正确');
-ok(deepFiles[0].name === 'deep.txt', '子目录文件名正确');
-
-const rootFiles = (await kv.listDir(env, 'copy_dest/tree_src')).files;
-eq(rootFiles.length, 1, '根目录文件数正确');
-
-// 源目录不受影响
-const srcFiles = (await kv.listDir(env, 'tree_src')).files;
-eq(srcFiles.length, 1, '源目录文件数不变');
-
-done();
+t.done();

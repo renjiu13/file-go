@@ -1,7 +1,28 @@
-// 渲染首页：文件资源管理器风格交互。
-// 骨架在这里拼接，样式见 style.js，交互脚本见 app.js；三段产物拼起来必须和拆分前逐字节一致。
+// 渲染入口页：骨架 + 样式 + 内联脚本。
+// 各交互模块是普通函数，这里把函数源码按顺序拼接后在浏览器里执行；
+// 这样模块文件能被 check-inline 检查，也不需要处理模板字符串转义。
 import { CSS } from './style.js';
-import { APP } from './app.js';
+import { namingModule } from './naming.js';
+import { uiModule } from './ui.js';
+import { selectionModule } from './selection.js';
+import { listingModule } from './listing.js';
+import { trashModule } from './trash.js';
+import { uploadModule } from './upload.js';
+import { downloadModule } from './download.js';
+import { contextmenuModule } from './contextmenu.js';
+import { appModule } from './app.js';
+
+const MODULES = [
+  namingModule,
+  uiModule,
+  selectionModule,
+  listingModule,
+  trashModule,
+  uploadModule,
+  downloadModule,
+  contextmenuModule,
+  appModule,
+];
 
 const PRE = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -20,16 +41,25 @@ const MID = `</style>
     <div class="actions" id="toolbar">
       <button class="icon-btn" id="btnMkdir" title="新建文件夹">新建文件夹</button>
       <button class="icon-btn" id="btnUpload" title="上传文件">上传文件</button>
-      <span style="width: 6px;"></span>
       <button class="icon-btn" id="btnTrash" title="回收站">回收站</button>
+      <span class="toolbar-sep"></span>
+      <input class="search-input" id="search" type="search" placeholder="搜索当前目录">
+      <select class="sort-select" id="sort" title="排序">
+        <option value="name">名称</option>
+        <option value="date">时间</option>
+        <option value="size">大小</option>
+      </select>
+      <button class="icon-btn" id="btnRefresh" title="刷新">刷新</button>
     </div>
   </div>
   <nav class="breadcrumb" id="breadcrumb"></nav>
+  <div class="list-head"><span class="sel-info" id="selInfo"></span></div>
   <input type="file" id="fileInput" hidden multiple>
   <ul id="list" tabindex="0" style="outline:none;"></ul>
 </div>
 
 <div class="status" id="status"></div>
+<div id="uploads"></div>
 
 <!-- 右键菜单 -->
 <div id="ctx-menu"></div>
@@ -49,6 +79,12 @@ const POST = `</script>
 </body>
 </html>`;
 
+function buildApp() {
+  const parts = ['var FG = {};'];
+  for (const mod of MODULES) parts.push('(' + mod.toString() + ')(FG);');
+  return parts.join('\n');
+}
+
 export function renderPage() {
-  return PRE + CSS + MID + APP + POST;
+  return PRE + CSS + MID + buildApp() + POST;
 }

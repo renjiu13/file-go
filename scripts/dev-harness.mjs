@@ -1,37 +1,46 @@
-// 临时端到端夹具：node:sqlite 顶住 D1、假 Telegram 顶住 Bot API，把 Worker 跑在本地 http 上
+// 本地端到端夹具：node:sqlite 当 D1，假 Telegram 当 Bot API，Worker 跑在 127.0.0.1:8791。
+// 假 Telegram 支持分片下载与 Range，可直接演示断点、截断和视频拖动。
 import http from 'node:http';
 import * as kv from '../test/helpers/db.mjs';
 import worker from '../src/index.js';
 import { fakeEnv } from '../test/helpers/fake-d1.mjs';
+import { installTelegram } from '../test/helpers/telegram-stub.mjs';
 
+const tg = installTelegram();
 const env = fakeEnv({ BOT_TOKEN: 'faketoken', CHAT_ID: '-1001234567890' }).env;
-
-const realFetch = globalThis.fetch;
-globalThis.fetch = async (url, init) => {
-  const u = String(url);
-  if (u.includes('api.telegram.org/botfaketoken/sendDocument')) {
-    return new Response(JSON.stringify({ ok: true, result: { message_id: 1, document: { file_id: 'fid_x' } } }),
-      { headers: { 'Content-Type': 'application/json' } });
-  }
-  return realFetch(url, init);
-};
-
 await kv.initSchema(env);
-for (const d of ['docs', 'photos', 'old-stuff', 'docs/sub']) await kv.ensureDir(env, d);
 
-const F = (id, name, path, size) =>
-  kv.saveFile(env, { id, fileId: 'f_' + id, messageId: 1, name, size, mime: 'text/plain', path, createdAt: Date.now() + size });
+const text = (s) => new TextEncoder().encode(s);
 
-await F('idroot000001', 'alpha.txt', '', 100);
-await F('idroot000002', 'Beta.png', '', 5000);
-await F('idroot000003', 'zeta.md', '', 25);
-await F('idroot000004', 'delta.log', '', 300);
-await F('idroot000005', 'config.json', '', 60);
-await F('idsub0000001', 'deep.txt', 'docs/sub', 10);
-await F('idold00000001', 'tmp.log', '', 900);
-await F('idgone000001', 'inside.txt', 'old-stuff', 70);
-await kv.softDeleteFile(env, 'idold00000001', '20261120');
-await kv.softDeleteDir(env, 'old-stuff', '20261118');
+async function seed(parentId, name, chunks, chunkSize) {
+  const size = chunks.reduce((a, b) => a + b.length, 0);
+  const { id } = await kv.insertFileNode(env, {
+    parentId, name, size, mime: name.endsWith('.png') ? 'image/png' : 'text/plain',
+    chunkSize: chunkSize || size, chunkCount: chunks.length,
+  });
+  for (let i = 0; i < chunks.length; i++) {
+    const fileId = `f_${id}_${i}`;
+    tg.addFile(fileId, chunks[i]);
+    await kv.addPart(env, id, i, fileId, 5000 + i, chunks[i].length, null);
+  }
+  return id;
+}
+
+const docs = await kv.ensureDirPath(env, 'docs');
+const sub = await kv.ensureDirPath(env, 'docs/sub');
+await kv.ensureDirPath(env, 'photos');
+const old = await kv.ensureDirPath(env, 'old-stuff');
+
+await seed(null, 'alpha.txt', [text('hello from alpha\n')]);
+await seed(null, 'Beta.png', [Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4])]);
+await seed(docs, 'deep.txt', [text('docs/sub 里的文件\n')]);
+await seed(sub, 'nested.txt', [text('nested!\n')]);
+// 多分片：16 字节、每片 4 字节，用来演示 Range 跨片
+await seed(null, 'multi.txt', [
+  text('AAAA'), text('BBBB'), text('CCCC'), text('DDDD'),
+], 4);
+const gone = await seed(old, 'inside.txt', [text('inside old-stuff\n')]);
+await kv.softDelete(env, gone);
 
 const server = http.createServer(async (req, res) => {
   const chunks = [];
@@ -42,12 +51,13 @@ const server = http.createServer(async (req, res) => {
     body: chunks.length ? Buffer.concat(chunks) : undefined,
   });
   try {
-    const response = await worker.fetch(request, env, {});
+    const response = await worker.fetch(request, env, { waitUntil() {} });
     res.writeHead(response.status, Object.fromEntries(response.headers));
     res.end(Buffer.from(await response.arrayBuffer()));
   } catch (err) {
     console.error(err);
-    res.writeHead(500); res.end(String(err && err.stack));
+    res.writeHead(500);
+    res.end(String(err && err.stack));
   }
 });
 

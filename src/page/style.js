@@ -8,7 +8,7 @@ export const CSS = `
     font-size: 14px; color: #111; background: #fff;
     -webkit-font-smoothing: antialiased; user-select: none;
   }
-  .container { max-width: 760px; margin: 0 auto; }
+  .container { max-width: 960px; margin: 0 auto; }
   .title-row {
     display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
   }
@@ -66,7 +66,7 @@ export const CSS = `
   /* 右键菜单 */
   #ctx-menu {
     position: fixed; display: none; background: #fff; border: 1px solid #ddd;
-    border-radius: 5px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); z-index: 1000;
+    border-radius: 5px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); z-index: 1600;
     padding: 4px 0; min-width: 160px;
   }
   .ctx-item {
@@ -165,5 +165,61 @@ export const CSS = `
   @media (max-width: 600px) {
     .date { width: 90px; }
     .size { display: none; }
+    .search-input { width: 96px; }
+    #uploads { left: 12px; right: 12px; width: auto; }
   }
+
+  /* ---- 分片版本新增 ---- */
+  .toolbar-sep { width: 1px; height: 18px; background: #eee; margin: 0 2px; }
+  .search-input {
+    height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 5px;
+    font-size: 12px; outline: none; width: 150px; font-family: inherit; background: #fff;
+  }
+  .search-input:focus { border-color: #999; }
+  .sort-select {
+    height: 30px; border: 1px solid #ddd; border-radius: 5px; background: #fff;
+    font-size: 12px; padding: 0 6px; outline: none; font-family: inherit; color: #333;
+  }
+  .list-head { display: flex; justify-content: flex-end; height: 18px; margin-bottom: 2px; }
+  .sel-info { font-size: 11px; color: #888; }
+  .crumb-current { color: #111; }
+  .status.error { background: #c22; }
+  .row { min-height: 34px; }
+  .orig {
+    color: #aaa; font-size: 11px; margin-left: 8px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  li.date-group {
+    border-bottom: 1px solid #eee; padding: 12px 6px 4px; color: #888;
+    font-size: 11px; font-weight: 500;
+  }
+  .btn-restore {
+    margin-left: 10px; padding: 2px 10px; font-size: 11px; border: 1px solid #ddd;
+    border-radius: 4px; background: #fff; cursor: pointer; color: #333; flex-shrink: 0;
+  }
+  .btn-restore:hover { background: #f5f5f5; }
+  #uploads {
+    position: fixed; right: 18px; bottom: 18px; width: 320px; max-height: 45vh;
+    overflow-y: auto; display: flex; flex-direction: column; gap: 8px; z-index: 1500;
+  }
+  .upload-row {
+    background: #fff; border: 1px solid #e5e5e5; border-radius: 7px; padding: 10px 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.08); position: relative;
+  }
+  .upload-top { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+  .upload-name {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: #222;
+  }
+  .upload-pct { color: #777; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .upload-bar-wrap { height: 4px; background: #eee; border-radius: 2px; overflow: hidden; }
+  .upload-bar { height: 100%; width: 0; background: #333; transition: width 0.2s; }
+  .upload-cancel {
+    position: absolute; right: 10px; bottom: 8px; border: none; background: transparent;
+    color: #999; font-size: 11px; cursor: pointer; font-family: inherit;
+  }
+  .upload-row.done .upload-bar { background: #2a7; }
+  .upload-row.failed .upload-bar { background: #d33; }
+  .modal-hint { font-size: 11px; color: #888; margin-top: 2px; min-height: 14px; }
+  .conflict-sub { margin-top: 4px; color: #888; }
 `;

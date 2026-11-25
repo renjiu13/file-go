@@ -1,92 +1,62 @@
-import { json, normalizePath, joinPath, nameError } from '../utils.js';
-import { addDir, dirExists } from '../db/dirs.js';
-import { findNameClash, conflictResult } from '../db/naming.js';
-import { renameItem, moveItem, copyItem } from '../db/relocate.js';
-import { softDeleteFile, softDeleteDir } from '../db/trash.js';
-import { readJson, getBeijingDate, conflictOpts } from './common.js';
+// 单个节点的元数据操作：新建目录、重命名、移动、复制、删除、恢复。
+// 这些操作只改 D1，从不触碰 Telegram。
 
-// 新建目录
-export async function handleMkdir(request, env) {
-  const body = await readJson(request);
-  if (!body) return json({ error: '无效请求' }, 400);
+import { json, nameError } from '../utils.js';
+import {
+  copyNode,
+  createDir,
+  getLiveDir,
+  moveNode,
+  renameNode,
+  restoreNode,
+  softDelete,
+} from '../db/nodes.js';
+import { conflictOpts, NO_STORE, readJson } from './common.js';
 
-  const parent = normalizePath(body.parent || '');
-  const name = (body.name || '').trim();
-
-  const invalid = nameError(name);
-  if (invalid) return json({ error: invalid }, 400);
-  if (!(await dirExists(env, parent))) return json({ error: '父目录不存在' }, 400);
-
-  const clash = await findNameClash(env, parent, name);
-  if (clash) return json(conflictResult(name, parent, clash), 409);
-
-  const path = joinPath(parent, name);
-  await addDir(env, path);
-  return json({ ok: true, path });
+function respond(r) {
+  if (r && r.ok) return json(r, 200, NO_STORE);
+  if (r && r.conflict) return json(r, 409, NO_STORE);
+  return json(r || { error: '操作失败' }, 400, NO_STORE);
 }
 
-// 删除（移入回收站）
-export async function handleDelete(request, env) {
+export async function handleMkdir(env, request) {
   const body = await readJson(request);
-  if (!body) return json({ error: '无效请求' }, 400);
-
-  const type = body.type;
-  const targetDate = getBeijingDate();
-
-  if (type === 'file') {
-    const id = body.id;
-    if (!id) return json({ error: '缺少 id' }, 400);
-    const res = await softDeleteFile(env, id, targetDate);
-    if (!res.ok) return json({ error: '文件不存在' }, 404);
-    return json({ ok: true });
-  }
-
-  if (type === 'dir') {
-    const path = normalizePath(body.path || '');
-    if (path === '') return json({ error: '不能删除根目录' }, 400);
-    const res = await softDeleteDir(env, path, targetDate);
-    if (!res.ok) return json({ error: '删除失败' }, 400);
-    return json({ ok: true, fileCount: res.fileCount });
-  }
-
-  return json({ error: '未知类型' }, 400);
+  if (!body || !body.name) return json({ error: '缺少目录名' }, 400, NO_STORE);
+  const parent = await getLiveDir(env, body.parentId || null);
+  if (!parent) return json({ error: '目标目录不存在' }, 404, NO_STORE);
+  const err = nameError(body.name);
+  if (err) return json({ error: err }, 400, NO_STORE);
+  return respond(await createDir(env, parent.id, body.name));
 }
 
-// 重命名
-export async function handleRename(request, env) {
+export async function handleRename(env, request) {
   const body = await readJson(request);
-  if (!body) return json({ error: '无效请求' }, 400);
-
-  const { type, source } = body;
-  const newName = String(body.newName || '').trim();
-
-  if (!source) return json({ error: '缺少操作对象' }, 400);
-  const invalid = nameError(newName);
-  if (invalid) return json({ error: invalid }, 400);
-
-  const res = await renameItem(env, type, source, newName, conflictOpts(body));
-  if (res.conflict) return json(res, 409);
-  if (!res.ok) return json({ error: res.error || '重命名失败' }, 400);
-  return json({ ok: true, skipped: !!res.skipped, name: res.name || null, path: res.path || null });
+  if (!body || !body.id) return json({ error: '缺少文件 id' }, 400, NO_STORE);
+  const err = nameError(body.name || '');
+  if (err) return json({ error: err }, 400, NO_STORE);
+  return respond(await renameNode(env, body.id, body.name, conflictOpts(body)));
 }
 
-// 移动 / 复制
-export async function handleMoveCopy(request, env, action) {
+export async function handleMove(env, request) {
   const body = await readJson(request);
-  if (!body) return json({ error: '无效请求' }, 400);
+  if (!body || !body.id) return json({ error: '缺少文件 id' }, 400, NO_STORE);
+  return respond(await moveNode(env, body.id, body.targetId ?? null, conflictOpts(body)));
+}
 
-  const { type, source } = body; // source: 文件的 id 或目录的 path
-  const target = normalizePath(body.targetDir || '');
+export async function handleCopy(env, request) {
+  const body = await readJson(request);
+  if (!body || !body.id) return json({ error: '缺少文件 id' }, 400, NO_STORE);
+  return respond(await copyNode(env, body.id, body.targetId ?? null, conflictOpts(body)));
+}
 
-  if (!source) return json({ error: '缺少操作对象' }, 400);
-  if (!(await dirExists(env, target))) return json({ error: '目标目录不存在' }, 400);
+export async function handleDelete(env, request) {
+  const body = await readJson(request);
+  if (!body || !body.id) return json({ error: '缺少文件 id' }, 400, NO_STORE);
+  return respond(await softDelete(env, body.id));
+}
 
-  const opts = conflictOpts(body);
-  const res = action === 'move'
-    ? await moveItem(env, type, source, target, opts)
-    : await copyItem(env, type, source, target, opts);
-
-  if (res.conflict) return json(res, 409);
-  if (!res.ok) return json({ error: res.error || '操作失败' }, 400);
-  return json({ ok: true, skipped: !!res.skipped, name: res.name || null, path: res.path || null });
+export async function handleRestore(env, request) {
+  const body = await readJson(request);
+  if (!body || !body.id) return json({ error: '缺少文件 id' }, 400, NO_STORE);
+  return respond(await restoreNode(env, body.id));
 }

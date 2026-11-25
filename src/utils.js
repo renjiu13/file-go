@@ -1,14 +1,18 @@
 // 文件大小上限：20MB（受 Telegram Bot API getFile 限制）
 export const MAX_SIZE = 20 * 1024 * 1024;
 
-// 短 ID 长度
-export const ID_LENGTH = 10;
+// 默认分片大小：16 MiB。低于 getFile 的 20MB 下载上限（留余量），远低于 50MB 上传上限。
+// 实际分片大小随文件记录持久化，代码里不假设它固定。
+export const DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024;
+
+// 短 ID 长度：16 位 base62，足够避免碰撞；旧的 10 位 ID 仍可访问
+export const ID_LENGTH = 16;
 
 // 返回 JSON 响应
-export function json(data, status = 200) {
+export function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, headers),
   });
 }
 

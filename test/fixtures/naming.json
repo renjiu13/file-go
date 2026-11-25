@@ -1,0 +1,34 @@
+{
+  "names": [
+    { "name": "a.txt", "valid": true, "error": "", "sanitized": "a.txt" },
+    { "name": "中文 文件.pdf", "valid": true, "error": "", "sanitized": "中文 文件.pdf" },
+    { "name": "a.b.c", "valid": true, "error": "", "sanitized": "a.b.c" },
+    { "name": ".hidden", "valid": true, "error": "", "sanitized": ".hidden" },
+    { "name": "x", "valid": true, "error": "", "sanitized": "x" },
+    { "name": "", "valid": false, "error": "名称不能为空", "sanitized": "file" },
+    { "name": "  a", "valid": false, "error": "名称首尾不能有空格", "sanitized": "a" },
+    { "name": "a  ", "valid": false, "error": "名称首尾不能有空格", "sanitized": "a" },
+    { "name": "a.", "valid": false, "error": "名称不能以点或空格结尾", "sanitized": "a" },
+    { "name": ".", "valid": false, "error": "名称不能是 . 或 ..", "sanitized": "file" },
+    { "name": "..", "valid": false, "error": "名称不能是 . 或 ..", "sanitized": "file" },
+    { "name": "a/b", "valid": false, "error": "名称不能包含 < > : \" / \\ | ? * 等字符", "sanitized": "a_b" },
+    { "name": "a:b", "valid": false, "error": "名称不能包含 < > : \" / \\ | ? * 等字符", "sanitized": "a_b" },
+    { "name": "a?b", "valid": false, "error": "名称不能包含 < > : \" / \\ | ? * 等字符", "sanitized": "a_b" },
+    { "name": "CON", "valid": false, "error": "名称是 Windows 保留名，请换一个", "sanitized": "_CON" },
+    { "name": "con.txt", "valid": false, "error": "名称是 Windows 保留名，请换一个", "sanitized": "_con.txt" },
+    { "name": "LPT1.bak", "valid": false, "error": "名称是 Windows 保留名，请换一个", "sanitized": "_LPT1.bak" },
+    { "name": "a<b>c:d.txt", "valid": false, "error": "名称不能包含 < > : \" / \\ | ? * 等字符", "sanitized": "a_b_c_d.txt" },
+    { "name": "trail. . ", "valid": false, "error": "名称首尾不能有空格", "sanitized": "trail" }
+  ],
+  "candidates": [
+    { "name": "report.pdf", "n": 2, "out": "report (2).pdf" },
+    { "name": "README", "n": 3, "out": "README (3)" },
+    { "name": ".bashrc", "n": 2, "out": ".bashrc (2)" },
+    { "name": "archive.tar.gz", "n": 2, "out": "archive.tar (2).gz" }
+  ],
+  "unique": [
+    { "name": "a.txt", "names": ["A.TXT", "b.txt"], "out": "a (1).txt" },
+    { "name": "a.txt", "names": ["b.txt"], "out": "a.txt" },
+    { "name": "a.txt", "names": ["a.txt", "a (1).txt", "A (3).TXT"], "out": "a (2).txt" }
+  ]
+}

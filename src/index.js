@@ -1,67 +1,123 @@
 import { renderPage } from './page/index.js';
-import { json, normalizePath } from './utils.js';
+import { json } from './utils.js';
 import { initSchema } from './db/schema.js';
+import { runCleanup } from './cron.js';
 import { handleWebhook } from './routes/webhook.js';
-import { handleUpload } from './routes/upload.js';
-import { handleFile } from './routes/file.js';
+import { handleFile, handleManifest } from './routes/file.js';
 import { handleList, handleTree } from './routes/list.js';
-import { handleMkdir, handleDelete, handleRename, handleMoveCopy } from './routes/items.js';
-import { handleTrash, handleRestore } from './routes/trash.js';
-import { handleBatchTrash, handleBatchRestore, handleBatchMove, handleBatchCopy } from './routes/batch.js';
+import {
+  handleCopy,
+  handleDelete,
+  handleMkdir,
+  handleMove,
+  handleRename,
+  handleRestore,
+} from './routes/items.js';
+import { handleBatch } from './routes/batch.js';
+import { handleTrash } from './routes/trash.js';
+import {
+  handleAbort,
+  handleComplete,
+  handleInit,
+  handlePart,
+  handleStatus,
+} from './routes/upload.js';
 
-// 路由表：这里只做「路径 → 处理函数」的分发，业务都在 routes/ 与 db/ 里。
-const API_GET = {
-  '/api/list': (request, env, url) => handleList(env, normalizePath(url.searchParams.get('path') || '')),
-  '/api/trash': (request, env) => handleTrash(env),
-  '/api/tree': (request, env) => handleTree(env),
-};
+// ID 是 16 位 base62；旧的 10 位 ID 也继续接受
+const ID = '([A-Za-z0-9]{6,32})';
+const RE_UPLOAD = new RegExp(`^/api/upload/${ID}$`);
+const RE_UPLOAD_PART = new RegExp(`^/api/upload/${ID}/part/(\\d+)$`);
+const RE_UPLOAD_COMPLETE = new RegExp(`^/api/upload/${ID}/complete$`);
+const RE_UPLOAD_ABORT = new RegExp(`^/api/upload/${ID}/abort$`);
+const RE_MANIFEST = new RegExp(`^/api/files/${ID}/manifest$`);
+const RE_FILE = new RegExp(`^/file/${ID}$`);
 
 const API_POST = {
-  '/api/upload': handleUpload,
   '/api/mkdir': handleMkdir,
+  '/api/rename': handleRename,
+  '/api/move': handleMove,
+  '/api/copy': handleCopy,
   '/api/delete': handleDelete,
   '/api/restore': handleRestore,
-  '/api/rename': handleRename,
-  '/api/move': (request, env) => handleMoveCopy(request, env, 'move'),
-  '/api/copy': (request, env) => handleMoveCopy(request, env, 'copy'),
-  '/api/batch-trash': handleBatchTrash,
-  '/api/batch-restore': handleBatchRestore,
-  '/api/batch-move': handleBatchMove,
-  '/api/batch-copy': handleBatchCopy,
+  '/api/batch': handleBatch,
+  '/api/upload/init': handleInit,
 };
 
-const FILE_PATH = /^\/file\/([A-Za-z0-9]{10,14})$/;
+function webhookAllowed(env, request) {
+  if (!env.WEBHOOK_SECRET) return true;
+  return request.headers.get('X-Telegram-Bot-Api-Secret-Token') === env.WEBHOOK_SECRET;
+}
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const { pathname } = url;
+    const method = request.method;
 
     try {
       await initSchema(env);
 
-      if (pathname === '/webhook' && request.method === 'POST') return handleWebhook(request, env);
+      if (method === 'OPTIONS') return new Response(null, { status: 204 });
 
-      const handler = (request.method === 'GET' ? API_GET : API_POST)[pathname];
-      if (handler) return handler(request, env, url);
-
-      // --- 文件下载 ---
-      const fileMatch = pathname.match(FILE_PATH);
-      if (fileMatch && (request.method === 'GET' || request.method === 'HEAD')) {
-        return handleFile(request, env, fileMatch[1]);
+      // --- Telegram webhook ---
+      if (pathname === '/webhook') {
+        if (method === 'GET') return json({ ok: true });
+        if (method !== 'POST') return json({ error: '方法不允许' }, 405);
+        if (!webhookAllowed(env, request)) return json({ error: 'forbidden' }, 403);
+        return handleWebhook(env, request);
       }
 
+      // --- 分片上传 ---
+      let m;
+      if ((m = pathname.match(RE_UPLOAD_PART)) && method === 'PUT') {
+        return handlePart(env, request, m[1], m[2]);
+      }
+      if ((m = pathname.match(RE_UPLOAD_COMPLETE)) && method === 'POST') {
+        return handleComplete(env, request, m[1]);
+      }
+      if ((m = pathname.match(RE_UPLOAD_ABORT)) && method === 'POST') {
+        return handleAbort(env, request, m[1]);
+      }
+      if ((m = pathname.match(RE_UPLOAD)) && method === 'GET') {
+        return handleStatus(env, m[1]);
+      }
+
+      // --- 清单与下载 ---
+      if ((m = pathname.match(RE_MANIFEST)) && method === 'GET') {
+        return handleManifest(env, m[1]);
+      }
+      if ((m = pathname.match(RE_FILE)) && (method === 'GET' || method === 'HEAD')) {
+        return handleFile(env, m[1], request, url);
+      }
+
+      // --- 元数据接口 ---
+      if (method === 'GET') {
+        if (pathname === '/api/list') return handleList(env, url);
+        if (pathname === '/api/tree') return handleTree(env);
+        if (pathname === '/api/trash') return handleTrash(env);
+      }
+      if (method === 'POST' && API_POST[pathname]) {
+        return API_POST[pathname](env, request);
+      }
+
+      if (pathname.startsWith('/api/')) return json({ error: '接口不存在' }, 404);
       if (pathname === '/favicon.ico') return new Response(null, { status: 204 });
 
-      // --- 页面渲染：其余 GET 一律回单页应用，当前目录由前端从地址栏解析 ---
-      if (request.method === 'GET') {
-        return new Response(renderPage(), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      // --- 页面：其余 GET 一律回单页应用，路径由前端从地址栏解析 ---
+      if (method === 'GET') {
+        return new Response(renderPage(), {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
       }
-
       return new Response('Not Found', { status: 404 });
     } catch (err) {
       console.error('未捕获的错误:', err);
-      return json({ error: '服务器内部错误' }, 500);
+      return json({ error: '服务器内部错误', detail: err && err.message }, 500);
     }
+  },
+
+  async scheduled(event, env, ctx) {
+    await initSchema(env);
+    ctx.waitUntil(runCleanup(env).catch((err) => console.error('清理任务失败:', err)));
   },
 };

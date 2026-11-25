@@ -9,3 +9,7 @@ CHAT_ID = "5504160733"
 binding = "DB"
 database_name = "file_go"
 database_id = "49a2ca6c-c82c-45e4-b222-9861b951e3da"
+
+# 每 5 分钟清理一次待删除的 Telegram 消息和过期上传会话
+[triggers]
+crons = ["*/5 * * * *"]

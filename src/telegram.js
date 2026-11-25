@@ -1,100 +1,124 @@
-// Telegram Bot API 基础地址
+// Telegram Bot API 的最小封装：只保留本项目需要的四个动作。
+// Bot Token 只在这个文件里拼进请求，永远不会出现在响应或重定向中。
+
 const TG_API = 'https://api.telegram.org';
 
-// 调用 Bot API（JSON 方式）
-export async function tgCall(env, method, body) {
+async function tgCall(env, method, body) {
   const res = await fetch(`${TG_API}/bot${env.BOT_TOKEN}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body || {}),
   });
   const data = await res.json();
   if (!data.ok) {
-    throw new Error(`Telegram ${method} 失败: ${data.description}`);
+    const err = new Error(`Telegram ${method} 失败: ${data.description || res.status}`);
+    err.telegramStatus = data.error_code || res.status;
+    if (data.parameters && data.parameters.retry_after) err.retryAfter = data.parameters.retry_after;
+    throw err;
   }
   return data.result;
 }
 
-// 发送文本消息
-export function sendText(env, chatId, text) {
-  return tgCall(env, 'sendMessage', { chat_id: chatId, text });
+export async function sendText(env, text, extra) {
+  return tgCall(env, 'sendMessage', Object.assign({ chat_id: env.CHAT_ID, text }, extra || {}));
 }
 
-// 通过 file_id 转发文件到私有频道
-// fileType: document | video | audio | voice | animation | photo
-export async function copyFileIdToChannel(env, fileId, fileType) {
-  const methodMap = {
-    document: 'sendDocument',
-    video: 'sendVideo',
-    audio: 'sendAudio',
-    voice: 'sendVoice',
-    animation: 'sendAnimation',
-    photo: 'sendPhoto',
-  };
-  const method = methodMap[fileType] || 'sendDocument';
-  const body = { chat_id: env.CHAT_ID };
-  body[fileType] = fileId;
-  const msg = await tgCall(env, method, body);
-  return { fileId: extractFileId(msg, fileType), messageId: msg.message_id };
-}
-
-// 从消息对象中提取 file_id
-function extractFileId(msg, fileType) {
-  if (fileType === 'photo') {
-    if (msg.photo && msg.photo.length) {
-      return msg.photo[msg.photo.length - 1].file_id;
-    }
-  }
-  if (msg[fileType] && msg[fileType].file_id) {
-    return msg[fileType].file_id;
-  }
-  // 兜底：按常见字段查找
-  if (msg.document) return msg.document.file_id;
-  if (msg.video) return msg.video.file_id;
-  if (msg.audio) return msg.audio.file_id;
-  if (msg.voice) return msg.voice.file_id;
-  if (msg.animation) return msg.animation.file_id;
-  if (msg.sticker) return msg.sticker.file_id;
-  return null;
-}
-
-// 上传文件到私有频道（multipart 方式，用于网页上传）
-export async function uploadFileToChannel(env, file) {
-  const form = new FormData();
-  form.append('chat_id', env.CHAT_ID);
-  form.append('document', file, file.name);
-
-  const res = await fetch(`${TG_API}/bot${env.BOT_TOKEN}/sendDocument`, {
-    method: 'POST',
-    body: form,
-  });
-  const data = await res.json().catch(() => null);
-  if (!data || !data.ok) {
-    const err = new Error(`Telegram sendDocument 失败: ${data ? data.description : `HTTP ${res.status}`}`);
-    // 429 是并发上传时的常见响应，交给调用方决定重试策略
-    err.telegramStatus = data ? data.error_code : 502;
-    throw err;
-  }
-  return { fileId: data.result.document.file_id, messageId: data.result.message_id };
-}
-
-// 删除频道中的消息（仅对 48 小时内的 bot 消息有效）
 export async function deleteChannelMessage(env, messageId) {
   try {
     await tgCall(env, 'deleteMessage', { chat_id: env.CHAT_ID, message_id: messageId });
     return true;
-  } catch (err) {
+  } catch {
     return false;
   }
 }
 
-// 获取文件在 Telegram 服务器上的路径（有效期约 1 小时）
 export async function getFilePath(env, fileId) {
   const result = await tgCall(env, 'getFile', { file_id: fileId });
+  if (!result || !result.file_path) throw new Error('Telegram getFile 未返回 file_path');
   return result.file_path;
 }
 
-// 构造文件下载 URL
 export function fileDownloadUrl(env, filePath) {
   return `${TG_API}/file/bot${env.BOT_TOKEN}/${filePath}`;
+}
+
+function multipartChunks(env, filename, boundary) {
+  const head =
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="chat_id"\r\n\r\n` +
+    `${env.CHAT_ID}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="document"; filename="${escapeFilename(filename)}"\r\n` +
+    `Content-Type: application/octet-stream\r\n\r\n`;
+  const tail = `\r\n--${boundary}--\r\n`;
+  const enc = new TextEncoder();
+  return { headBytes: enc.encode(head), tailBytes: enc.encode(tail) };
+}
+
+// 把请求体流式拼进 multipart，直接交给 Telegram。
+// 关键点：不 arrayBuffer()，分片 16 MiB 不占 Worker 内存；Content-Length 由调用方算好。
+export async function uploadPartToChannel(env, stream, size, filename, boundary) {
+  const { headBytes, tailBytes } = multipartChunks(env, filename, boundary);
+  const reader = stream.getReader();
+
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(headBytes);
+    },
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.enqueue(tailBytes);
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+  });
+
+  const init = {
+    method: 'POST',
+    headers: {
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(size),
+    },
+    body,
+  };
+  // Node 的 fetch（测试环境）要求流式请求体声明 duplex，Workers 会忽略这个字段。
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    init.duplex = 'half';
+  }
+
+  const res = await fetch(`${TG_API}/bot${env.BOT_TOKEN}/sendDocument`, init);
+  const data = await res.json().catch(() => null);
+  if (!data || !data.ok) {
+    const err = new Error(`Telegram sendDocument 失败: ${data ? data.description : res.status}`);
+    err.telegramStatus = (data && data.error_code) || res.status;
+    if (data && data.parameters && data.parameters.retry_after) err.retryAfter = data.parameters.retry_after;
+    throw err;
+  }
+  const doc = data.result.document || data.result.video || data.result.audio || {};
+  return { fileId: doc.file_id, messageId: data.result.message_id };
+}
+
+export function escapeFilename(name) {
+  return String(name || 'part.bin').replace(/["\\\r\n]/g, '_').slice(0, 200);
+}
+
+// 计算流式 multipart 的 Content-Length：
+// 头部和尾部是固定字节数，加上原始字节数即可。
+export function multipartLength(env, size, filename, boundary) {
+  const { headBytes, tailBytes } = multipartChunks(env, filename, boundary);
+  return headBytes.length + size + tailBytes.length;
+}
+
+// 下载分片的一段。失效时清缓存重试一次由调用方负责。
+export async function downloadRange(env, filePath, start, end) {
+  return fetch(fileDownloadUrl(env, filePath), {
+    headers: { Range: `bytes=${start}-${end}` },
+  });
 }
