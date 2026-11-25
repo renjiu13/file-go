@@ -80,7 +80,12 @@ const POST = `</script>
 </html>`;
 
 function buildApp() {
-  const parts = ['var FG = {};'];
+  // esbuild 的 keepNames（wrangler 默认开着）会把函数包成 __name(fn, "name")，
+  // 这些引用随函数源码一起进页面，而定义只活在 Worker 的模块作用域里，
+  // 浏览器一执行到就 ReferenceError，整页脚本静默报废。兜一层，页面不再依赖打包配置。
+  const parts = [
+    'var FG = {};var __name = function (fn) { return fn; };',
+  ];
   for (const mod of MODULES) parts.push('(' + mod.toString() + ')(FG);');
   return parts.join('\n');
 }

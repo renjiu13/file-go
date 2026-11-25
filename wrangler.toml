@@ -2,6 +2,10 @@ name = "tg-file-store"
 main = "src/index.js"
 compatibility_date = "2024-11-20"
 
+# 页面脚本是运行时用 Function.toString() 拼出来的。esbuild 的 keepNames 会把函数
+# 包成 __name(fn, "name")，序列化后浏览器拿不到 __name 定义，整页脚本会直接报错。
+keep_names = false
+
 [vars]
 CHAT_ID = "5504160733"
 

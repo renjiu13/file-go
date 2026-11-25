@@ -12,6 +12,7 @@
     "test": "node test/naming.test.mjs && node test/range.test.mjs && node test/db.test.mjs && node test/upload.test.mjs && node test/file.test.mjs && node test/items.test.mjs && node test/webhook.test.mjs && node test/cron.test.mjs"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "wrangler": "^4.165.0"
   }
 }
