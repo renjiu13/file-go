@@ -319,9 +319,11 @@ export function appModule(FG) {
     const input = document.getElementById('fileInput');
     if (input) {
       input.addEventListener('change', async () => {
-        const files = input.files;
+        // input.files 是活对象：先抄成数组再清 value，否则清空后拿到的就是空列表，
+        // 选择同一个文件也不会再触发 change。
+        const files = Array.from(input.files || []);
         input.value = '';
-        if (files && files.length) await FG.upload.run(files);
+        if (files.length) await FG.upload.run(files);
       });
     }
     const search = document.getElementById('search');
