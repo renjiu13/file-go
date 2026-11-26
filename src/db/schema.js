@@ -65,6 +65,16 @@ const SCHEMA_SQL = [
     update_id INTEGER PRIMARY KEY,
     created_at INTEGER NOT NULL
   )`,
+
+  // 登录限速：按来源 IP 记录连续失败次数，避免离线撞库。
+  // 只存一行一个 key，Cron 里清理一天前的记录。
+  `CREATE TABLE IF NOT EXISTS auth_throttle (
+    key           TEXT PRIMARY KEY,
+    fails         INTEGER NOT NULL DEFAULT 0,
+    first_at      INTEGER NOT NULL,
+    blocked_until INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS auth_throttle_first ON auth_throttle(first_at)`,
 ];
 
 let schemaReady = false;

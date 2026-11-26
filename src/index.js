@@ -15,6 +15,15 @@ import {
 } from './routes/items.js';
 import { handleBatch } from './routes/batch.js';
 import { handleTrash } from './routes/trash.js';
+import { authEnabled, checkCsrf, currentSession, isWriteMethod, readLocked, safeNext } from './auth.js';
+import {
+  csrfRejected,
+  handleLogin,
+  handleLoginPage,
+  handleLogout,
+  handleMe,
+  unauthorized,
+} from './routes/auth.js';
 import {
   handleAbort,
   handleComplete,
@@ -48,6 +57,19 @@ function webhookAllowed(env, request) {
   return request.headers.get('X-Telegram-Bot-Api-Secret-Token') === env.WEBHOOK_SECRET;
 }
 
+// 未登录也能看的路径：登录页本身、公开分享、favicon
+function isPublicReadPath(pathname) {
+  return pathname === '/favicon.ico' || pathname.startsWith('/i/');
+}
+
+function loginRedirect(url) {
+  const next = safeNext(url.pathname + url.search);
+  return new Response(null, {
+    status: 302,
+    headers: { Location: '/login?next=' + encodeURIComponent(next), 'Cache-Control': 'no-store' },
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -59,12 +81,36 @@ export default {
 
       if (method === 'OPTIONS') return new Response(null, { status: 204 });
 
+      // --- 登录：页面与三个接口都不需要已有会话 ---
+      if (pathname === '/login' && (method === 'GET' || method === 'HEAD')) {
+        return handleLoginPage(env, request, url);
+      }
+      if (pathname === '/api/login' && method === 'POST') return handleLogin(env, request);
+      if (pathname === '/api/logout' && (method === 'POST' || method === 'GET')) {
+        return handleLogout(env, request);
+      }
+      if (pathname === '/api/me' && method === 'GET') return handleMe(env, request);
+
       // --- Telegram webhook ---
       if (pathname === '/webhook') {
         if (method === 'GET') return json({ ok: true });
         if (method !== 'POST') return json({ error: '方法不允许' }, 405);
         if (!webhookAllowed(env, request)) return json({ error: 'forbidden' }, 403);
         return handleWebhook(env, request);
+      }
+
+      // --- 鉴权门：只在配置了 PASSWORD_HASH 时生效 ---
+      // 读默认公开（本仓库按“公开文件列表”使用），写必须登录 + CSRF；
+      // REQUIRE_LOGIN_FOR_READ=1 时读也要求会话。
+      if (authEnabled(env)) {
+        const session = await currentSession(env, request);
+        const write = isWriteMethod(method);
+        if (write && !session.ok) return unauthorized();
+        if (write && !checkCsrf(request, url)) return csrfRejected();
+        if (!session.ok && readLocked(env) && !isPublicReadPath(pathname)) {
+          if (pathname.startsWith('/api/')) return unauthorized();
+          return loginRedirect(url);
+        }
       }
 
       // --- 分片上传 ---

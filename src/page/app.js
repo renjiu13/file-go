@@ -20,7 +20,8 @@ export function appModule(FG) {
 
   FG.api = async function (path, opts) {
     opts = opts || {};
-    const init = { method: opts.method || 'GET', headers: {} };
+    // CSRF 头始终带上：未启用登录时服务端忽略，启用后写操作必需
+    const init = { method: opts.method || 'GET', headers: { 'X-File-Go-Csrf': '1' } };
     if (opts.body !== undefined) {
       init.method = opts.method || 'POST';
       init.headers['Content-Type'] = 'application/json';
@@ -29,6 +30,12 @@ export function appModule(FG) {
     if (opts.headers) Object.assign(init.headers, opts.headers);
     try {
       const res = await fetch(path, init);
+      if (res.status === 401) {
+        // 会话过期或未登录：直接带去登录页，登录后回到当前路径
+        const next = encodeURIComponent(location.pathname + location.search);
+        location.href = '/login?next=' + next;
+        return { status: 401, ok: false, data: null };
+      }
       const type = res.headers.get('content-type') || '';
       const data = type.indexOf('json') >= 0 ? await res.json() : await res.text();
       return { status: res.status, ok: res.ok, data };
@@ -346,11 +353,42 @@ export function appModule(FG) {
     }
   }
 
+  // 登录状态：未启用登录时按钮隐藏；启用后显示“登录/退出”，未登录时禁用写操作
+  async function loadAuth() {
+    const btn = document.getElementById('btnAuth');
+    const res = await FG.api('/api/me');
+    const info = (res.ok && res.data) || {};
+    if (!info.auth) return;
+    if (btn) {
+      btn.style.display = '';
+      if (info.loggedIn) {
+        btn.textContent = '退出';
+        btn.setAttribute('href', '#');
+        btn.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          await FG.api('/api/logout', { method: 'POST', body: {} });
+          location.reload();
+        });
+      } else {
+        btn.textContent = '登录';
+        btn.setAttribute('href', '/login?next=' + encodeURIComponent(location.pathname + location.search));
+        ['btnMkdir', 'btnUpload'].forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.disabled = true;
+            el.title = '登录后才能修改文件';
+          }
+        });
+      }
+    }
+  }
+
   async function init() {
     FG.listing.attach();
     FG.selection.attach();
     FG.contextmenu.attach();
     wire();
+    loadAuth();
     state.path = pathFromHash();
     const sort = document.getElementById('sort');
     if (sort && sort.value) state.sort = sort.value;

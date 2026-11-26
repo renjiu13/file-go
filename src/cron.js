@@ -3,6 +3,7 @@
 
 import { deleteChannelMessage } from './telegram.js';
 import { dropPendingDeletes, expireUploads, listPendingDeletes } from './db/parts.js';
+import { cleanThrottle } from './db/throttle.js';
 
 export async function runCleanup(env, now = Date.now()) {
   const ids = await listPendingDeletes(env, 40);
@@ -14,5 +15,7 @@ export async function runCleanup(env, now = Date.now()) {
   await dropPendingDeletes(env, ids);
 
   const expired = await expireUploads(env, now, 20);
-  return { queued: ids.length, deleted, expired };
+  // 登录失败记录只留一天，省得表无限增长
+  const throttles = await cleanThrottle(env, now);
+  return { queued: ids.length, deleted, expired, throttles };
 }

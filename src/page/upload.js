@@ -103,7 +103,11 @@ export function uploadModule(FG) {
           '/api/upload/' + encodeURIComponent(node.id) + '/part/' + idx,
           {
             method: 'PUT',
-            headers: { 'X-Part-SHA256': sha, 'Content-Type': 'application/octet-stream' },
+            headers: {
+              'X-Part-SHA256': sha,
+              'X-File-Go-Csrf': '1',
+              'Content-Type': 'application/octet-stream',
+            },
             body: blob,
           }
         );

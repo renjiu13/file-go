@@ -87,6 +87,22 @@ npm run deploy    # 上线
 crons = ["*/5 * * * *"]
 ```
 
+## 🔐 登录与权限
+
+- **只有同时配置 `PASSWORD_HASH` 和 `SESSION_SECRET` 才启用登录**；什么都不配就是完全敞开，页面、列表、上传都能用。
+- **读默认公开**：列表页、`/api/list`、`/api/tree`、`/file/:id` 任何人可访问（本仓库按“公开文件列表”使用，登录保护的是修改）。
+- **写必须登录**：新建/改名/移动/复制/删除/恢复/上传都要求会话，并带 `X-File-Go-Csrf: 1` 头；缺会话 401，缺头 403。
+- 想连读也锁上，加变量 `REQUIRE_LOGIN_FOR_READ="1"`：页面会 302 到 `/login?next=…`，API 返回 401。
+- 会话是 HMAC 签名的 Cookie（`fg_session`，HttpOnly、SameSite=Lax、https 下带 Secure），默认 168 小时，可用 `SESSION_TTL_HOURS` 调整。签名密钥混入了口令哈希，**改密码会让所有旧会话立即失效**。
+- 口令用 PBKDF2-SHA256（10 万次迭代，写在哈希串里），只在登录时算一次，走 `crypto.subtle` 原生实现，不占 Worker 的 JS CPU 预算。
+- 连续失败 5 次开始限速：15 分钟窗口内每次再失败，封禁时长 30s 起翻倍、上限 15 分钟，返回 429 + `Retry-After`；记录存在 `auth_throttle`，Cron 清理一天前的行。
+
+```bash
+node scripts/hash-password.mjs "你的密码"   # 同时生成 PASSWORD_HASH 与 SESSION_SECRET
+npx wrangler secret put PASSWORD_HASH
+npx wrangler secret put SESSION_SECRET
+```
+
 ## 🚀 部署
 
 1. 在 BotFather 创建 Bot，拿到 `BOT_TOKEN`；建一个私有频道并把 Bot 设为管理员，拿到 `CHAT_ID`（`-100` 开头）。

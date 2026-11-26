@@ -52,6 +52,7 @@ const MID = `</style>
         <option value="size">大小</option>
       </select>
       <button class="icon-btn" id="btnRefresh" title="刷新">刷新</button>
+      <a class="icon-btn" id="btnAuth" href="/login" style="display:none;">登录</a>
     </div>
   </div>
   <nav class="breadcrumb" id="breadcrumb"></nav>
