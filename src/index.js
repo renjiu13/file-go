@@ -3,6 +3,7 @@ import { json } from './utils.js';
 import { initSchema } from './db/schema.js';
 import { runCleanup } from './cron.js';
 import { handleWebhook } from './routes/webhook.js';
+import { DAV_PREFIX, handleDav } from './webdav.js';
 import { handleFile, handleManifest } from './routes/file.js';
 import {
   handleShare,
@@ -86,6 +87,11 @@ export default {
 
     try {
       await initSchema(env);
+
+      // --- WebDAV：自带 Basic 认证，放在 OPTIONS 快捷返回之前 ---
+      if (pathname === DAV_PREFIX || pathname.startsWith(DAV_PREFIX + '/')) {
+        return handleDav(env, request, url);
+      }
 
       if (method === 'OPTIONS') return new Response(null, { status: 204 });
 

@@ -82,6 +82,17 @@ export async function listChildren(env, parentId) {
   };
 }
 
+// 按父目录 + 名字取子节点（文件或目录），WebDAV 路径解析用。
+export async function getChild(env, parentId, name) {
+  const row = await env.DB.prepare(
+    `SELECT * FROM nodes
+     WHERE parent_id IS ? AND name = ? COLLATE NOCASE
+       AND status = 'ready' AND deleted_at IS NULL
+     LIMIT 1`
+  ).bind(parentId, name).first();
+  return mapNode(row);
+}
+
 // 公开分享令牌：一次性生成后挂在节点上，删除/回收站期间自动失效（查不到），
 // 恢复后同一链接再次生效（token 不清空）。
 export async function getNodeByShareToken(env, token) {

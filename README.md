@@ -53,6 +53,7 @@ src/
     file.js           /api/files/:id/manifest、/file/:id Range 下载
     share.js          /api/share（创建/取消/查询）、/i/:token 公开下载
     webhook.js        Telegram Bot 入库
+  webdav.js           /dav：Basic 认证 + PROPFIND/PUT/MOVE 等最小实现
   page/               单页前端，由服务端吐出一个内联脚本
     index.js          拼接 HTML 与各模块
     style.js          CSS
@@ -70,7 +71,7 @@ src/
 test/                 断言脚本，node 直接跑，不依赖测试框架
   helpers/            假 D1（node:sqlite）、假 Telegram、断言计数
   fixtures/           命名规则共享向量
-  *.test.mjs          共 623 条断言
+  *.test.mjs          共 699 条断言
 scripts/
   dev-harness.mjs     假 D1 + 假 Telegram，Worker 跑在 127.0.0.1:8791
   check-inline.mjs    编译页面内联脚本，兜住语法/转义错误
@@ -79,7 +80,7 @@ scripts/
 ## 🧪 本地开发与测试
 
 ```bash
-npm test          # 命名 / 图标 / 登录 / Range / 数据层 / 上传 / 下载 / 元数据 / 分享 / Webhook / Cron，共 623 条断言
+npm test          # 命名 / 图标 / 登录 / Range / 数据层 / 上传 / 下载 / 元数据 / 分享 / WebDAV / Webhook / Cron，共 699 条断言
 npm run check     # 编译页面内联脚本
 npm run harness   # 本地夹具：http://127.0.0.1:8791（含多分片文件 multi.txt）
 npm run dev       # wrangler dev（需要 .dev.vars 提供 BOT_TOKEN / CHAT_ID）
@@ -118,6 +119,29 @@ npx wrangler secret put SESSION_SECRET
 - 文件进回收站期间链接返回 404；**恢复后同一 token 自动复活**，不必重新分享。
 - 取消分享只清 `share_token`，文件本身不动；重新分享会生成新 token（旧链接永久失效）。
 - 分享是写操作：启用登录后必须登录 + `X-File-Go-Csrf: 1`；但 `/i/<token>` 本身不需要登录，`REQUIRE_LOGIN_FOR_READ` 也不会拦它。
+
+## 🗂️ WebDAV（/dav）
+
+挂载点固定为 `https://<域名>/dav`，用 Basic 认证，默认用户名和口令都是 `filego`：
+
+```bash
+# Windows 资源管理器 / macOS Finder 都能直接加这个地址
+\\<域名>@SSL\dav            # Windows 里也可以“映射网络驱动器”
+https://<域名>/dav         # macOS Finder：前往 → 连接服务器
+
+# 命令行
+curl -u filego:filego -X PROPFIND -H 'Depth: 1' https://<域名>/dav/
+curl -u filego:filego -T note.txt https://<域名>/dav/docs/note.txt
+curl -u filego:filego https://<域名>/dav/docs/note.txt
+```
+
+- 覆盖默认口令：`npx wrangler secret put WEBDAV_USER` / `WEBDAV_PASS`（两者都建议改，默认值只是让挂载能跑通）。
+- 支持 `OPTIONS / PROPFIND / PROPPATCH / GET / HEAD / PUT / MKCOL / DELETE / MOVE / COPY / LOCK / UNLOCK`，Finder、Windows 资源管理器、rclone 这类客户端都能挂载、改文件、拖拽。
+- **PUT 上限 16 MiB**（正好一个分片，流式直传 Telegram，不占 Worker 内存）；更大的文件返回 `413`，请用网页端分片上传。
+- 覆盖同名文件 = 旧节点进回收站 + 新节点上线，和网页端行为一致。
+- `LOCK/UNLOCK` 只回最小可用响应，**不持久化锁**：适合单用户改文件，不适合多人协作编辑。
+- 读写都走 `nodes` 表，所以 WebDAV 与网页端看到的是同一份目录树；WebDAV 上传的文件同样能右键「公开分享」。
+- WebDAV 的 Basic 口令独立于网页登录（`PASSWORD_HASH`）；**务必只在 HTTPS 下使用**，Basic 认证是明文口令。
 
 ## 🚀 部署
 

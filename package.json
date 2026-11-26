@@ -9,7 +9,7 @@
     "deploy": "wrangler deploy",
     "harness": "node scripts/dev-harness.mjs",
     "check": "node scripts/check-inline.mjs",
-    "test": "node test/naming.test.mjs && node test/icons.test.mjs && node test/auth.test.mjs && node test/range.test.mjs && node test/db.test.mjs && node test/upload.test.mjs && node test/file.test.mjs && node test/items.test.mjs && node test/share.test.mjs && node test/webhook.test.mjs && node test/cron.test.mjs"
+    "test": "node test/naming.test.mjs && node test/icons.test.mjs && node test/auth.test.mjs && node test/range.test.mjs && node test/db.test.mjs && node test/upload.test.mjs && node test/file.test.mjs && node test/items.test.mjs && node test/share.test.mjs && node test/webdav.test.mjs && node test/webhook.test.mjs && node test/cron.test.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
