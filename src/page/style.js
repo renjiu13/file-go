@@ -164,6 +164,11 @@ export const CSS = `
     border-radius: 3px; margin-left: 6px; flex-shrink: 0;
   }
 
+  .share-tag {
+    font-size: 10px; color: #2a7; background: #e9f8f1; padding: 1px 5px;
+    border-radius: 3px; margin-left: 6px; flex-shrink: 0;
+  }
+
   @media (max-width: 600px) {
     .date { width: 90px; }
     .size { display: none; }

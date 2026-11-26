@@ -22,7 +22,8 @@ const SCHEMA_SQL = [
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
     deleted_at  INTEGER,
-    trash_id    TEXT
+    trash_id    TEXT,
+    share_token TEXT
   )`,
 
   // 同一目录内名称唯一（大小写不敏感），文件与目录共用命名空间。
@@ -86,6 +87,20 @@ export function __resetSchemaCache() {
   initPromise = null;
 }
 
+// 老库的 nodes 表由 CREATE TABLE IF NOT EXISTS 建立，新增的列不会被补上，
+// 这里单独 ALTER 一次；列已存在时 D1 报 duplicate column，忽略即可。
+async function ensureShareColumn(env) {
+  try {
+    await env.DB.prepare('ALTER TABLE nodes ADD COLUMN share_token TEXT').run();
+  } catch (err) {
+    if (!/duplicate column/i.test(String((err && err.message) || err))) throw err;
+  }
+  await env.DB.prepare(
+    'CREATE UNIQUE INDEX IF NOT EXISTS nodes_share_token ' +
+    'ON nodes(share_token) WHERE share_token IS NOT NULL',
+  ).run();
+}
+
 export async function initSchema(env) {
   if (schemaReady) return;
   if (initPromise) return initPromise;
@@ -93,6 +108,7 @@ export async function initSchema(env) {
   initPromise = (async () => {
     try {
       await env.DB.batch(SCHEMA_SQL.map((sql) => env.DB.prepare(sql)));
+      await ensureShareColumn(env);
       await migrateLegacy(env);
       schemaReady = true;
     } catch (err) {

@@ -20,13 +20,13 @@ function contentDisposition(name, inline) {
   return `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
-function baseHeaders(node, inline) {
+function baseHeaders(node, inline, cacheControl) {
   const type = node.mime || guessMime(node.name);
   return {
     'Content-Type': type,
     'Content-Disposition': contentDisposition(node.name, inline && isInlineMime(type)),
     'Accept-Ranges': 'bytes',
-    'Cache-Control': 'private, max-age=86400',
+    'Cache-Control': cacheControl || 'private, max-age=86400',
     'X-Content-Type-Options': 'nosniff',
   };
 }
@@ -164,13 +164,19 @@ export async function handleFile(env, id, request, url) {
   if (!node || node.kind !== 'file' || node.status !== 'ready' || node.deletedAt) {
     return json({ error: '文件不存在' }, 404, NO_STORE);
   }
-  const parts = await getParts(env, id);
+  return serveNode(env, node, request, url, {});
+}
+
+// 已经拿到节点的下载实现，/file/:id 与 /i/:share 共用（Range、预算、缓存一套逻辑）
+export async function serveNode(env, node, request, url, opts) {
+  const options = opts || {};
+  const parts = await getParts(env, node.id);
   if (!parts.length) return json({ error: '文件没有分片' }, 404, NO_STORE);
 
   const size = node.size;
   const chunkSize = node.chunkSize || Math.max(1, size);
   const inline = !url.searchParams.has('download');
-  const headers = baseHeaders(node, inline);
+  const headers = baseHeaders(node, inline, options.cacheControl);
 
   if (request.method === 'HEAD') {
     headers['Content-Length'] = String(size);

@@ -66,6 +66,12 @@ export function contextmenuModule(FG) {
     if (it.kind === 'file') {
       m.appendChild(entry('下载', () => FG.app.downloadItem(it)));
       m.appendChild(entry('复制链接', () => FG.app.copyLink(it)));
+      if (it.shareToken) {
+        m.appendChild(entry('复制公开链接', () => FG.app.copyShareLink(it)));
+        m.appendChild(entry('取消公开链接', () => FG.app.unshareItem(it)));
+      } else {
+        m.appendChild(entry('公开分享', () => FG.app.shareItem(it)));
+      }
     }
     m.appendChild(sep());
     m.appendChild(entry('重命名', () => FG.app.renameItem(it)));

@@ -4,6 +4,12 @@ import { initSchema } from './db/schema.js';
 import { runCleanup } from './cron.js';
 import { handleWebhook } from './routes/webhook.js';
 import { handleFile, handleManifest } from './routes/file.js';
+import {
+  handleShare,
+  handleShareCreate,
+  handleShareDelete,
+  handleShareStatus,
+} from './routes/share.js';
 import { handleList, handleTree } from './routes/list.js';
 import {
   handleCopy,
@@ -40,6 +46,7 @@ const RE_UPLOAD_COMPLETE = new RegExp(`^/api/upload/${ID}/complete$`);
 const RE_UPLOAD_ABORT = new RegExp(`^/api/upload/${ID}/abort$`);
 const RE_MANIFEST = new RegExp(`^/api/files/${ID}/manifest$`);
 const RE_FILE = new RegExp(`^/file/${ID}$`);
+const RE_SHARE = new RegExp(`^/i/${ID}$`);
 
 const API_POST = {
   '/api/mkdir': handleMkdir,
@@ -50,6 +57,7 @@ const API_POST = {
   '/api/restore': handleRestore,
   '/api/batch': handleBatch,
   '/api/upload/init': handleInit,
+  '/api/share': handleShareCreate,
 };
 
 function webhookAllowed(env, request) {
@@ -90,6 +98,12 @@ export default {
         return handleLogout(env, request);
       }
       if (pathname === '/api/me' && method === 'GET') return handleMe(env, request);
+
+      // --- 公开分享：不需要登录，也不受读锁定影响 ---
+      let sm;
+      if ((sm = pathname.match(RE_SHARE)) && (method === 'GET' || method === 'HEAD')) {
+        return handleShare(env, sm[1], request, url);
+      }
 
       // --- Telegram webhook ---
       if (pathname === '/webhook') {
@@ -141,9 +155,13 @@ export default {
         if (pathname === '/api/list') return handleList(env, url);
         if (pathname === '/api/tree') return handleTree(env);
         if (pathname === '/api/trash') return handleTrash(env);
+        if (pathname === '/api/share') return handleShareStatus(env, url);
       }
       if (method === 'POST' && API_POST[pathname]) {
         return API_POST[pathname](env, request);
+      }
+      if (method === 'DELETE' && pathname === '/api/share') {
+        return handleShareDelete(env, request);
       }
 
       if (pathname.startsWith('/api/')) return json({ error: '接口不存在' }, 404);

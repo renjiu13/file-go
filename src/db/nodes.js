@@ -32,6 +32,7 @@ export function mapNode(r) {
     updatedAt: Number(r.updated_at) || 0,
     deletedAt: r.deleted_at ?? null,
     trashId: r.trash_id ?? null,
+    shareToken: r.share_token ?? null,
   };
 }
 
@@ -56,7 +57,7 @@ export async function listChildren(env, parentId) {
   ).bind(parentId).all();
 
   const filesRes = await env.DB.prepare(
-    `SELECT id, name, size, mime, created_at, chunk_count FROM nodes
+    `SELECT id, name, size, mime, created_at, chunk_count, share_token FROM nodes
      WHERE parent_id IS ? AND kind = 'file' AND status = 'ready' AND deleted_at IS NULL
      ORDER BY created_at DESC, id DESC`
   ).bind(parentId).all();
@@ -76,8 +77,30 @@ export async function listChildren(env, parentId) {
       mime: r.mime || '',
       createdAt: Number(r.created_at) || 0,
       chunkCount: Number(r.chunk_count) || 0,
+      shareToken: r.share_token ?? null,
     })),
   };
+}
+
+// 公开分享令牌：一次性生成后挂在节点上，删除/回收站期间自动失效（查不到），
+// 恢复后同一链接再次生效（token 不清空）。
+export async function getNodeByShareToken(env, token) {
+  if (!token) return null;
+  const row = await env.DB.prepare(
+    `SELECT * FROM nodes
+     WHERE share_token = ? AND kind = 'file' AND status = 'ready' AND deleted_at IS NULL`
+  ).bind(token).first();
+  return mapNode(row);
+}
+
+export async function setShareToken(env, id, token) {
+  await env.DB.prepare('UPDATE nodes SET share_token = ?, updated_at = ? WHERE id = ?')
+    .bind(token, Date.now(), id).run();
+}
+
+export async function clearShareToken(env, id) {
+  await env.DB.prepare('UPDATE nodes SET share_token = NULL, updated_at = ? WHERE id = ?')
+    .bind(Date.now(), id).run();
 }
 
 // 路径 → 目录节点。逐段查询，路径层级通常只有几层，查询数可控。

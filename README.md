@@ -12,6 +12,7 @@
 - **元数据零 Telegram 开销**：新建/重命名/移动/复制/删除/恢复只改 D1；复制文件只新增 `file_parts` 引用，不重传 Telegram。
 - **Bot 直接入库**：Webhook 收到的文件已在 Telegram 上，直接建节点，不下载不重传（受 `getFile` 限制，Bot 入口 20 MB 上限）。
 - **回收站**：删除目录时整棵子树共享同一个 `trash_id`；恢复只允许恢复顶层项，自动处理重名。
+- **公开分享**：右键任意文件「公开分享」生成 `/i/<token>` 直链，任意类型都能分享，带一年强缓存；文件进回收站链接立即 404，恢复后同一链接自动复活。
 - **Windows 式操作**：点击/Ctrl/Shift 选择、右键菜单、F2 重命名、Delete 删除、Enter 打开、地址栏反映目录、浏览器前进后退跟随目录。
 - **命名规则**：禁止 `< > : " / \ | ? *`、控制字符、结尾点或空格，以及 `CON`/`PRN`/`AUX`/`NUL`/`COM1-9`/`LPT1-9`；同名按大小写不敏感判定；冲突弹窗支持替换 / 保留两者 / 跳过。
 - **Cron 清理**：每 5 分钟删除待清理的 Telegram 消息（每次 ≤40）并回收过期上传会话（每次 ≤20），控制子请求预算。
@@ -28,6 +29,7 @@
 ```text
 src/
   index.js            路由分发、Webhook 密钥、Cron 入口
+  auth.js             会话 Cookie 签名、PBKDF2 口令校验、CSRF 判断
   range.js            Range 解析、分片映射、42 子请求预算
   path-cache.js       tg_file_id → file_path 缓存（内存 + Cache API，45 分钟）
   telegram.js         Bot API：流式 multipart 上传、Range 下载、删消息
@@ -36,10 +38,11 @@ src/
   db/
     schema.js         建表、索引、旧库迁移
     ids.js            16 位 base62 ID
-    nodes.js          nodes 表：目录列表、路径解析、重命名/移动/复制/回收站
+    nodes.js          nodes 表：目录列表、路径解析、重命名/移动/复制/回收站/分享令牌
     parts.js          file_parts 表 + pending_deletes 队列
     naming.js         冲突检测与「保留两者」命名
     idem.js           Telegram update_id 去重
+    throttle.js       登录失败限速
   routes/
     common.js         请求体解析、冲突策略、no-store
     list.js           /api/list、/api/tree
@@ -48,6 +51,7 @@ src/
     batch.js          /api/batch（单次最多 8 项）
     upload.js         /api/upload/init、part、complete、abort、status
     file.js           /api/files/:id/manifest、/file/:id Range 下载
+    share.js          /api/share（创建/取消/查询）、/i/:token 公开下载
     webhook.js        Telegram Bot 入库
   page/               单页前端，由服务端吐出一个内联脚本
     index.js          拼接 HTML 与各模块
@@ -61,10 +65,12 @@ src/
     download.js       manifest、逐片校验、流式写盘
     contextmenu.js    自定义右键菜单
     app.js            路由、状态、API 封装与入口
+    icons.js          文件夹/文件 SVG 图标
+    login.js          登录页
 test/                 断言脚本，node 直接跑，不依赖测试框架
   helpers/            假 D1（node:sqlite）、假 Telegram、断言计数
   fixtures/           命名规则共享向量
-  *.test.mjs          共 458 条断言
+  *.test.mjs          共 623 条断言
 scripts/
   dev-harness.mjs     假 D1 + 假 Telegram，Worker 跑在 127.0.0.1:8791
   check-inline.mjs    编译页面内联脚本，兜住语法/转义错误
@@ -73,7 +79,7 @@ scripts/
 ## 🧪 本地开发与测试
 
 ```bash
-npm test          # 命名 / Range / 数据层 / 上传 / 下载 / 元数据 / Webhook / Cron，共 458 条断言
+npm test          # 命名 / 图标 / 登录 / Range / 数据层 / 上传 / 下载 / 元数据 / 分享 / Webhook / Cron，共 623 条断言
 npm run check     # 编译页面内联脚本
 npm run harness   # 本地夹具：http://127.0.0.1:8791（含多分片文件 multi.txt）
 npm run dev       # wrangler dev（需要 .dev.vars 提供 BOT_TOKEN / CHAT_ID）
@@ -102,6 +108,16 @@ node scripts/hash-password.mjs "你的密码"   # 同时生成 PASSWORD_HASH 与
 npx wrangler secret put PASSWORD_HASH
 npx wrangler secret put SESSION_SECRET
 ```
+
+## 🌐 公开分享
+
+右键任意文件 →「公开分享」，会生成 `https://<域名>/i/<16 位 token>` 并自动复制；再右键可「取消公开链接」。
+
+- 不限于图片，任意类型都能分享；`/i/<token>` 的下载、Range、`?part=`、`?download=` 与 `/file/:id` 完全一致，所以视频能直接拖动进度条。
+- 分享响应带 `Cache-Control: public, max-age=31536000, immutable`，token 一旦分发就不要指望能收回缓存副本。
+- 文件进回收站期间链接返回 404；**恢复后同一 token 自动复活**，不必重新分享。
+- 取消分享只清 `share_token`，文件本身不动；重新分享会生成新 token（旧链接永久失效）。
+- 分享是写操作：启用登录后必须登录 + `X-File-Go-Csrf: 1`；但 `/i/<token>` 本身不需要登录，`REQUIRE_LOGIN_FOR_READ` 也不会拦它。
 
 ## 🚀 部署
 

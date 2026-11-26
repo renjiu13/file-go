@@ -177,6 +177,50 @@ export function appModule(FG) {
     }
   }
 
+  function copyText(url, okMsg) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(
+        () => toast(okMsg),
+        () => toast(url)
+      );
+    } else {
+      toast(url);
+    }
+  }
+
+  function shareUrl(item) {
+    return location.origin + '/i/' + encodeURIComponent(item.shareToken);
+  }
+
+  function copyShareLink(item) {
+    if (!item || !item.shareToken) return;
+    copyText(shareUrl(item), '公开链接已复制');
+  }
+
+  async function shareItem(item) {
+    if (!item || item.kind !== 'file') return;
+    const res = await FG.api('/api/share', { method: 'POST', body: { id: item.id } });
+    if (!res.ok) {
+      toast((res.data && res.data.error) || '创建分享链接失败', true);
+      return;
+    }
+    item.shareToken = res.data.shareToken;
+    copyText(location.origin + res.data.url, '公开链接已复制');
+    FG.listing.render();
+  }
+
+  async function unshareItem(item) {
+    if (!item || !item.shareToken) return;
+    const res = await FG.api('/api/share', { method: 'DELETE', body: { id: item.id } });
+    if (!res.ok) {
+      toast((res.data && res.data.error) || '取消分享失败', true);
+      return;
+    }
+    item.shareToken = null;
+    toast('已取消公开链接');
+    FG.listing.render();
+  }
+
   async function mkdir() {
     const name = await FG.ui.prompt({ title: '新建文件夹', placeholder: '文件夹名称' });
     if (name == null) return;
@@ -414,6 +458,9 @@ export function appModule(FG) {
     openItem,
     downloadItem,
     copyLink,
+    copyShareLink,
+    shareItem,
+    unshareItem,
     mkdir,
     renameItem,
     deleteItems,

@@ -64,6 +64,7 @@ export function listingModule(FG) {
     const date = isDir ? item.updatedAt || item.createdAt : item.createdAt;
     let extra = '';
     if (item.trashTag) extra += '<span class="trash-tag">回收站</span>';
+    if (item.shareToken) extra += '<span class="share-tag">公开</span>';
     if (item.originalPath) extra += '<span class="orig">原位置：' + esc(item.originalPath) + '</span>';
     return (
       '<li><div class="row' + (sel ? ' selected' : '') + (focus ? ' focused' : '') +
