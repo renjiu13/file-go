@@ -68,7 +68,7 @@ export function listingModule(FG) {
     return (
       '<li><div class="row' + (sel ? ' selected' : '') + (focus ? ' focused' : '') +
       '" data-id="' + esc(item.id) + '" data-kind="' + esc(item.kind) + '" data-idx="' + idx + '">' +
-      '<span class="ico">' + (isDir ? '📁' : '📄') + '</span>' +
+      '<span class="ico">' + FG.icons.of(item.kind) + '</span>' +
       '<span class="name">' + esc(item.name) + extra + '</span>' +
       (isDir
         ? '<span class="size"></span>'

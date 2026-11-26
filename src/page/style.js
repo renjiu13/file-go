@@ -39,7 +39,7 @@ export const CSS = `
     content: ''; position: absolute; inset: 1px; border: 1px dotted #999;
     border-radius: 2px; pointer-events: none;
   }
-  .ico { flex-shrink: 0; width: 18px; margin-right: 8px; color: #888; display: inline-flex; align-items: center; }
+  .ico { flex-shrink: 0; width: 18px; margin-right: 8px; color: #888; display: inline-flex; align-items: center; line-height: 0; }
   .name {
     flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     color: #111; text-decoration: none;
@@ -99,7 +99,9 @@ export const CSS = `
     border: 1px solid #eee; border-radius: 4px; max-height: 180px; overflow-y: auto;
     margin-bottom: 12px; padding: 4px;
   }
-  .tree-item { padding: 4px 8px; font-size: 12px; color: #555; cursor: pointer; border-radius: 3px; }
+  .tree-item { padding: 4px 8px; font-size: 12px; color: #555; cursor: pointer; border-radius: 3px; display: flex; align-items: center; gap: 4px; }
+  .tree-item .ico { width: 16px; margin-right: 2px; }
+  .tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tree-item:hover { background: #f0f0f0; color: #111; }
   .tree-item.selected { background: #e8f0fe; color: #111; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 6px; }

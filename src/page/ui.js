@@ -168,7 +168,8 @@ export function uiModule(FG) {
     for (const d of entries) {
       const row = document.createElement('div');
       row.className = 'tree-item' + (String(d.id) === String(selected) ? ' selected' : '');
-      row.textContent = d.path || '全部文件';
+      row.innerHTML = '<span class="ico">' + FG.icons.folder + '</span>' +
+        '<span class="tree-label">' + esc(d.path || '全部文件') + '</span>';
       row.addEventListener('click', () => {
         list.querySelectorAll('.tree-item').forEach((x) => x.classList.remove('selected'));
         row.classList.add('selected');

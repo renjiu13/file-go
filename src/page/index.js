@@ -2,6 +2,7 @@
 // 各交互模块是普通函数，这里把函数源码按顺序拼接后在浏览器里执行；
 // 这样模块文件能被 check-inline 检查，也不需要处理模板字符串转义。
 import { CSS } from './style.js';
+import { iconsModule } from './icons.js';
 import { namingModule } from './naming.js';
 import { uiModule } from './ui.js';
 import { selectionModule } from './selection.js';
@@ -13,6 +14,7 @@ import { contextmenuModule } from './contextmenu.js';
 import { appModule } from './app.js';
 
 const MODULES = [
+  iconsModule,
   namingModule,
   uiModule,
   selectionModule,
