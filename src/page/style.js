@@ -8,7 +8,10 @@ export const CSS = `
     font-size: 14px; color: #111; background: #fff;
     -webkit-font-smoothing: antialiased; user-select: none;
   }
-  .container { max-width: 960px; margin: 0 auto; }
+  .container {
+    max-width: 960px; margin: 0 auto;
+    min-height: calc(100vh - 80px); display: flex; flex-direction: column;
+  }
   .title-row {
     display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
   }
@@ -56,9 +59,10 @@ export const CSS = `
   .size { width: 72px; text-align: right; margin-left: 12px; }
   .date { width: 130px; text-align: right; margin-left: 12px; overflow: hidden; text-overflow: ellipsis; }
   .empty { color: #aaa; text-align: center; padding: 48px 0; font-size: 13px; }
-  .footer { text-align: center; color: #bbb; font-size: 12px; padding: 28px 0 12px; }
+  .footer { text-align: center; color: #bbb; font-size: 12px; padding: 16px 0 0; margin-top: auto; }
+  /* bottom 抬高到页脚文字之上，否则居中的提示会和贴底的页脚叠在一起 */
   .status {
-    position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%);
+    position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%);
     background: #111; color: #fff; padding: 8px 16px; border-radius: 6px;
     font-size: 12px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 100;
   }

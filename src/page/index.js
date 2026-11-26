@@ -59,7 +59,7 @@ const MID = `</style>
   <div class="list-head"><span class="sel-info" id="selInfo"></span></div>
   <input type="file" id="fileInput" hidden multiple>
   <ul id="list" tabindex="0" style="outline:none;"></ul>
-  <footer class="footer">由A,wang@2026 ws驱动</footer>
+  <footer class="footer">© 2026 Wang · File</footer>
 </div>
 
 <div class="status" id="status"></div>
