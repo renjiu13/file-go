@@ -107,6 +107,12 @@ npx wrangler secret put WEBHOOK_SECRET
 https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=<Worker 地址>/webhook&secret_token=<WEBHOOK_SECRET>
 ```
 
+> 部署相关：页面脚本是运行时用 `Function.toString()` 拼出来的，构建配置会直接影响页面。
+> `wrangler.toml` 里的 `keep_names = false` 与 `src/page/index.js` 里内置的 `__name` 兜底都别删——
+> esbuild 的 keepNames 会往函数体注入 `__name(...)`，缺了兜底浏览器就报
+> `Uncaught ReferenceError: __name is not defined`，整页白屏。`npm run check` 会用 keepNames
+> 打包一次并校验这个引用，`npm test` 不覆盖它。
+
 ## 🔁 旧库迁移
 
 首次 `initSchema` 会把旧的 `files` / `dirs` 表迁移进 `nodes` / `file_parts`：
