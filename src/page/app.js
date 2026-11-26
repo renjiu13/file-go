@@ -12,9 +12,11 @@ export function appModule(FG) {
     selected: new Set(),
     anchorIdx: -1,
     focusIdx: -1,
-    query: '',
     sort: 'name',
     loading: true,
+    // anonymous=true 表示已确认“启用了登录但当前未登录”的访客，
+    // 这类访客操作失败时只提示，不强制跳登录页
+    anonymous: false,
   };
   FG.state = state;
 
@@ -31,9 +33,12 @@ export function appModule(FG) {
     try {
       const res = await fetch(path, init);
       if (res.status === 401) {
-        // 会话过期或未登录：直接带去登录页，登录后回到当前路径
-        const next = encodeURIComponent(location.pathname + location.search);
-        location.href = '/login?next=' + next;
+        // 未登录的访客：只提示，不跳转；会话过期则仍引导去登录页
+        if (state.anonymous) {
+          toast('请先登录后再操作', true);
+        } else {
+          location.href = '/login?next=' + encodeURIComponent(nextLocation());
+        }
         return { status: 401, ok: false, data: null };
       }
       const type = res.headers.get('content-type') || '';
@@ -78,6 +83,11 @@ export function appModule(FG) {
     } catch (e) {
       location.hash = enc;
     }
+  }
+
+  // 当前目录记在 hash 里，回跳地址不带 hash 就会把人送回根目录
+  function nextLocation() {
+    return location.pathname + location.search + (location.hash || '');
   }
 
   function knownNames() {
@@ -277,7 +287,7 @@ export function appModule(FG) {
   }
 
   async function batch(action, ids, targetId) {
-    const out = { success: 0, skipped: 0, failed: 0, results: [] };
+    const out = { success: 0, skipped: 0, failed: 0, results: [], denied: false };
     for (let i = 0; i < ids.length; i += 8) {
       const slice = ids.slice(i, i + 8);
       const body = { action, items: slice.map((id) => ({ id })) };
@@ -290,6 +300,8 @@ export function appModule(FG) {
         out.results = out.results.concat(res.data.results || []);
       } else {
         out.failed += slice.length;
+        // 未登录的 401 由 FG.api 提示过一次「请先登录后再操作」，别再拿「失败 N 项」盖掉它
+        if (res.status === 401) out.denied = true;
       }
     }
     return out;
@@ -306,6 +318,7 @@ export function appModule(FG) {
     });
     if (!ok) return;
     const r = await batch('trash', items.map((x) => x.id));
+    if (r.denied) return;
     toast(r.failed ? '已删除 ' + r.success + ' 项，失败 ' + r.failed + ' 项' : '已移到回收站：' + r.success + ' 项', r.failed > 0);
     await refresh();
   }
@@ -315,6 +328,7 @@ export function appModule(FG) {
     const pick = await FG.ui.chooseDir({ title: '移动到…', currentId: state.dirId });
     if (!pick) return;
     const r = await batch('move', items.map((x) => x.id), pick.dirId);
+    if (r.denied) return;
     if (r.failed) {
       const first = (r.results.find((x) => x && !x.ok) || {}).error || '目标位置存在同名项';
       toast('已移动 ' + r.success + ' 项，失败 ' + r.failed + ' 项：' + first, true);
@@ -329,6 +343,7 @@ export function appModule(FG) {
     const pick = await FG.ui.chooseDir({ title: '复制到…', currentId: state.dirId });
     if (!pick) return;
     const r = await batch('copy', items.map((x) => x.id), pick.dirId);
+    if (r.denied) return;
     if (r.failed) {
       const first = (r.results.find((x) => x && !x.ok) || {}).error || '目标位置存在同名项';
       toast('已复制 ' + r.success + ' 项，失败 ' + r.failed + ' 项：' + first, true);
@@ -341,6 +356,7 @@ export function appModule(FG) {
   async function restoreItems(ids) {
     if (!ids || !ids.length) return;
     const r = await batch('restore', ids);
+    if (r.denied) return;
     toast('已恢复 ' + r.success + ' 项' + (r.failed ? '，失败 ' + r.failed + ' 项' : ''), r.failed > 0);
     await refresh();
   }
@@ -377,17 +393,6 @@ export function appModule(FG) {
         if (files.length) await FG.upload.run(files);
       });
     }
-    const search = document.getElementById('search');
-    if (search) {
-      let timer = null;
-      search.addEventListener('input', () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-          state.query = search.value;
-          FG.listing.render();
-        }, 120);
-      });
-    }
     const sort = document.getElementById('sort');
     if (sort) {
       sort.addEventListener('change', () => {
@@ -400,9 +405,13 @@ export function appModule(FG) {
   // 登录状态：未启用登录时按钮隐藏；启用后显示“登录/退出”，未登录时禁用写操作
   async function loadAuth() {
     const btn = document.getElementById('btnAuth');
+    const tr = document.getElementById('btnTrash');
     const res = await FG.api('/api/me');
     const info = (res.ok && res.data) || {};
+    // 回收站只有登录可见；没启用登录的公开模式没有访客概念，照常显示
+    if (tr) tr.style.display = !info.auth || info.loggedIn ? '' : 'none';
     if (!info.auth) return;
+    if (!info.loggedIn) state.anonymous = true;
     if (btn) {
       btn.style.display = '';
       if (info.loggedIn) {
@@ -415,7 +424,11 @@ export function appModule(FG) {
         });
       } else {
         btn.textContent = '登录';
-        btn.setAttribute('href', '/login?next=' + encodeURIComponent(location.pathname + location.search));
+        btn.setAttribute('href', '/login?next=' + encodeURIComponent(nextLocation()));
+        // href 在初始化时就固定了，进过子目录后再点会把人带回根目录，所以点击时重新算一次
+        btn.addEventListener('click', () => {
+          btn.setAttribute('href', '/login?next=' + encodeURIComponent(nextLocation()));
+        });
         ['btnMkdir', 'btnUpload'].forEach((id) => {
           const el = document.getElementById(id);
           if (el) {
@@ -432,7 +445,8 @@ export function appModule(FG) {
     FG.selection.attach();
     FG.contextmenu.attach();
     wire();
-    loadAuth();
+    // 先拿到登录态再渲染首屏，否则 updateToolbar 会按「可写」把按钮点亮
+    await loadAuth();
     state.path = pathFromHash();
     const sort = document.getElementById('sort');
     if (sort && sort.value) state.sort = sort.value;

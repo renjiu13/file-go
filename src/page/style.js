@@ -56,6 +56,7 @@ export const CSS = `
   .size { width: 72px; text-align: right; margin-left: 12px; }
   .date { width: 130px; text-align: right; margin-left: 12px; overflow: hidden; text-overflow: ellipsis; }
   .empty { color: #aaa; text-align: center; padding: 48px 0; font-size: 13px; }
+  .footer { text-align: center; color: #bbb; font-size: 12px; padding: 28px 0 12px; }
   .status {
     position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%);
     background: #111; color: #fff; padding: 8px 16px; border-radius: 6px;
@@ -172,17 +173,11 @@ export const CSS = `
   @media (max-width: 600px) {
     .date { width: 90px; }
     .size { display: none; }
-    .search-input { width: 96px; }
     #uploads { left: 12px; right: 12px; width: auto; }
   }
 
   /* ---- 分片版本新增 ---- */
   .toolbar-sep { width: 1px; height: 18px; background: #eee; margin: 0 2px; }
-  .search-input {
-    height: 30px; padding: 0 10px; border: 1px solid #ddd; border-radius: 5px;
-    font-size: 12px; outline: none; width: 150px; font-family: inherit; background: #fff;
-  }
-  .search-input:focus { border-color: #999; }
   .sort-select {
     height: 30px; border: 1px solid #ddd; border-radius: 5px; background: #fff;
     font-size: 12px; padding: 0 6px; outline: none; font-family: inherit; color: #333;

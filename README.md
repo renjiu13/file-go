@@ -59,7 +59,7 @@ src/
     style.js          CSS
     naming.js         与服务端一致的命名规则
     ui.js             toast / modal / prompt / 冲突弹窗 / 目录选择器 / 上传进度
-    listing.js        列表渲染、排序、搜索、框选
+    listing.js        列表渲染、排序、框选
     trash.js          回收站视图
     selection.js      键盘选择
     upload.js         切片、哈希、并发、IndexedDB 续传
@@ -71,7 +71,7 @@ src/
 test/                 断言脚本，node 直接跑，不依赖测试框架
   helpers/            假 D1（node:sqlite）、假 Telegram、断言计数
   fixtures/           命名规则共享向量
-  *.test.mjs          共 699 条断言
+  *.test.mjs          共 703 条断言
 scripts/
   dev-harness.mjs     假 D1 + 假 Telegram，Worker 跑在 127.0.0.1:8791
   check-inline.mjs    编译页面内联脚本，兜住语法/转义错误
@@ -80,7 +80,7 @@ scripts/
 ## 🧪 本地开发与测试
 
 ```bash
-npm test          # 命名 / 图标 / 登录 / Range / 数据层 / 上传 / 下载 / 元数据 / 分享 / WebDAV / Webhook / Cron，共 699 条断言
+npm test          # 命名 / 图标 / 登录 / Range / 数据层 / 上传 / 下载 / 元数据 / 分享 / WebDAV / Webhook / Cron，共 703 条断言
 npm run check     # 编译页面内联脚本
 npm run harness   # 本地夹具：http://127.0.0.1:8791（含多分片文件 multi.txt）
 npm run dev       # wrangler dev（需要 .dev.vars 提供 BOT_TOKEN / CHAT_ID）
@@ -98,7 +98,8 @@ crons = ["*/5 * * * *"]
 
 - **只有同时配置 `PASSWORD_HASH` 和 `SESSION_SECRET` 才启用登录**；什么都不配就是完全敞开，页面、列表、上传都能用。
 - **读默认公开**：列表页、`/api/list`、`/api/tree`、`/file/:id` 任何人可访问（本仓库按“公开文件列表”使用，登录保护的是修改）。
-- **写必须登录**：新建/改名/移动/复制/删除/恢复/上传都要求会话，并带 `X-File-Go-Csrf: 1` 头；缺会话 401，缺头 403。
+- **回收站只有登录可见**：启用登录后，未登录访问 `/api/trash` 返回 401，页面上的回收站按钮也只对登录用户显示。
+- **写必须登录**：新建/改名/移动/复制/删除/恢复/上传都要求会话，并带 `X-File-Go-Csrf: 1` 头；缺会话 401，缺头 403。未登录的访客操作时只弹出提示，不会被强制带到登录页。
 - 想连读也锁上，加变量 `REQUIRE_LOGIN_FOR_READ="1"`：页面会 302 到 `/login?next=…`，API 返回 401。
 - 会话是 HMAC 签名的 Cookie（`fg_session`，HttpOnly、SameSite=Lax、https 下带 Secure），默认 168 小时，可用 `SESSION_TTL_HOURS` 调整。签名密钥混入了口令哈希，**改密码会让所有旧会话立即失效**。
 - 口令用 PBKDF2-SHA256（10 万次迭代，写在哈希串里），只在登录时算一次，走 `crypto.subtle` 原生实现，不占 Worker 的 JS CPU 预算。

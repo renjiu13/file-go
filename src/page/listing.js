@@ -1,4 +1,4 @@
-// 列表：排序、搜索、选择、面包屑和行渲染。
+// 列表：排序、选择、面包屑和行渲染。
 // 数据来自 FG.state；本模块只负责把数据画出来并把点击翻译成选择/打开。
 export function listingModule(FG) {
   function esc(s) {
@@ -32,10 +32,8 @@ export function listingModule(FG) {
 
   function items() {
     if (FG.state.trashMode) return FG.trash.items();
-    const q = (FG.state.query || '').trim().toLowerCase();
-    const match = (it) => !q || String(it.name).toLowerCase().indexOf(q) >= 0;
-    const dirs = FG.state.dirs.filter(match).sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-Hans-CN'));
-    const files = FG.state.files.filter(match);
+    const dirs = FG.state.dirs.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-Hans-CN'));
+    const files = FG.state.files.slice();
     const sort = FG.state.sort;
     files.sort((a, b) => {
       if (sort === 'size') return (b.size || 0) - (a.size || 0) || String(a.name).localeCompare(String(b.name));
@@ -96,11 +94,13 @@ export function listingModule(FG) {
 
   function updateToolbar() {
     const trash = FG.state.trashMode;
+    // 访客的写入口一律置灰；这里每次渲染都会重写 disabled，所以登录态必须一起算进来
+    const locked = trash || FG.state.anonymous;
     const bMkdir = document.getElementById('btnMkdir');
     const bUpload = document.getElementById('btnUpload');
     const bTrash = document.getElementById('btnTrash');
-    if (bMkdir) bMkdir.disabled = trash;
-    if (bUpload) bUpload.disabled = trash;
+    if (bMkdir) bMkdir.disabled = locked;
+    if (bUpload) bUpload.disabled = locked;
     if (bTrash) bTrash.textContent = trash ? '返回文件' : '回收站';
     const info = document.getElementById('selInfo');
     if (info) {

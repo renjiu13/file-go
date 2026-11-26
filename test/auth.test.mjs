@@ -229,6 +229,26 @@ t.ok(!toBase64Url(bytes).includes('+') && !toBase64Url(bytes).includes('/'), 'ba
   t.eq(authedPage.status, 200, '登录后可看页面');
 }
 
+// --- 回收站只有登录可见 ---
+{
+  const { env } = await envFor();
+  await kv.createDir(env, null, 'd');
+  const anon = await call(env, '/api/trash');
+  t.eq(anon.status, 401, '未登录访问 /api/trash 401');
+  const ok = await login(env);
+  const authed = await call(env, '/api/trash', { headers: { Cookie: ok.token } });
+  t.eq(authed.status, 200, '登录后可访问 /api/trash');
+  const body = await authed.json();
+  t.ok(Array.isArray(body.groups), '返回分组列表');
+}
+
+// --- 未配置口令时回收站照常开放 ---
+{
+  const { env } = await envFor({ PASSWORD_HASH: '', SESSION_SECRET: '' });
+  const res = await call(env, '/api/trash');
+  t.eq(res.status, 200, '未启用登录时 /api/trash 开放');
+}
+
 // --- webhook 不受登录影响（自带密钥校验） ---
 {
   const { env } = await envFor();

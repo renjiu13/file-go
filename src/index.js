@@ -127,6 +127,8 @@ export default {
         const write = isWriteMethod(method);
         if (write && !session.ok) return unauthorized();
         if (write && !checkCsrf(request, url)) return csrfRejected();
+        // 回收站属于登录用户的私有内容，无论是否开启读锁定都要求会话
+        if (!session.ok && pathname === '/api/trash') return unauthorized();
         if (!session.ok && readLocked(env) && !isPublicReadPath(pathname)) {
           if (pathname.startsWith('/api/')) return unauthorized();
           return loginRedirect(url);

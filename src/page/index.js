@@ -43,9 +43,9 @@ const MID = `</style>
     <div class="actions" id="toolbar">
       <button class="icon-btn" id="btnMkdir" title="新建文件夹">新建文件夹</button>
       <button class="icon-btn" id="btnUpload" title="上传文件">上传文件</button>
-      <button class="icon-btn" id="btnTrash" title="回收站">回收站</button>
+      <!-- 默认藏好，由 loadAuth 按登录态决定显示，避免访客看到按钮闪一下 -->
+      <button class="icon-btn" id="btnTrash" title="回收站" style="display:none;">回收站</button>
       <span class="toolbar-sep"></span>
-      <input class="search-input" id="search" type="search" placeholder="搜索当前目录">
       <select class="sort-select" id="sort" title="排序">
         <option value="name">名称</option>
         <option value="date">时间</option>
@@ -59,6 +59,7 @@ const MID = `</style>
   <div class="list-head"><span class="sel-info" id="selInfo"></span></div>
   <input type="file" id="fileInput" hidden multiple>
   <ul id="list" tabindex="0" style="outline:none;"></ul>
+  <footer class="footer">由A,wang@2026 ws驱动</footer>
 </div>
 
 <div class="status" id="status"></div>

@@ -87,7 +87,10 @@ export function contextmenuModule(FG) {
     m.appendChild(entry('新建文件夹', () => FG.app.mkdir()));
     m.appendChild(entry('上传文件', () => FG.app.pickUpload()));
     m.appendChild(sep());
-    m.appendChild(entry(FG.state.trashMode ? '返回文件' : '回收站', () => FG.app.toggleTrash()));
+    // 回收站只有登录可见
+    if (!FG.state.anonymous) {
+      m.appendChild(entry(FG.state.trashMode ? '返回文件' : '回收站', () => FG.app.toggleTrash()));
+    }
     m.appendChild(entry('刷新', () => FG.app.refresh()));
   }
 

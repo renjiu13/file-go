@@ -5,9 +5,14 @@ import * as kv from '../test/helpers/db.mjs';
 import worker from '../src/index.js';
 import { fakeEnv } from '../test/helpers/fake-d1.mjs';
 import { installTelegram } from '../test/helpers/telegram-stub.mjs';
+import { hashPassword } from '../src/auth.js';
 
 const tg = installTelegram();
-const env = fakeEnv({ BOT_TOKEN: 'faketoken', CHAT_ID: '-1001234567890' }).env;
+// 带 DEV_PASSWORD 启动即启用登录，用来在浏览器里对比访客与登录用户的界面差异
+const AUTH = process.env.DEV_PASSWORD
+  ? { PASSWORD_HASH: await hashPassword(process.env.DEV_PASSWORD), SESSION_SECRET: 'dev-harness-secret' }
+  : {};
+const env = fakeEnv({ BOT_TOKEN: 'faketoken', CHAT_ID: '-1001234567890', ...AUTH }).env;
 await kv.initSchema(env);
 
 const text = (s) => new TextEncoder().encode(s);
@@ -61,4 +66,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(8791, '127.0.0.1', () => console.log('dev harness on http://127.0.0.1:8791'));
+server.listen(8791, '127.0.0.1', () =>
+  console.log(
+    'dev harness on http://127.0.0.1:8791' +
+      (process.env.DEV_PASSWORD ? '（已启用登录，口令取 DEV_PASSWORD）' : '（公开模式）'),
+  ),
+);
